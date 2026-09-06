@@ -1,0 +1,32 @@
+# ---- secrets: never commit these ----
+solar_defect_camera/secrets.h
+**/secrets.h
+.env
+.env.local
+**/.env
+**/.env.local
+
+# ---- local python environment ----
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+
+# ---- build output ----
+build/
+**/build/
+*.bin
+*.elf
+*.map
+
+# ---- runtime state ----
+*.log
+usage_state.json
+
+# ---- os noise ----
+.DS_Store
+**/.DS_Store
+Thumbs.db
