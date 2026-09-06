@@ -7,6 +7,7 @@
 #include "secrets.h"
 #include "web_ui_gzip.h"
 #include "oled.h"
+#include "provisioning.h"
 
 // Confirmed AI-Thinker ESP32-CAM / OV2640 pin map.
 #define PWDN_GPIO_NUM 32
@@ -40,6 +41,9 @@ constexpr uint16_t CAPTURE_HEIGHT = 1200;
 constexpr int PREVIEW_JPEG_QUALITY = 15;
 constexpr int CAPTURE_JPEG_QUALITY = 10;
 
+enum class RunMode : uint8_t { Normal, Setup };
+RunMode runMode = RunMode::Normal;
+
 httpd_handle_t controlServer = nullptr;
 httpd_handle_t streamServer = nullptr;
 SemaphoreHandle_t cameraMutex = nullptr;
@@ -66,6 +70,7 @@ constexpr char STREAM_CONTENT_TYPE[] =
 enum class DisplayState : uint8_t {
   Booting,
   CameraFail,
+  SetupPortal,
   WifiConnecting,
   WifiFail,
   Ready,
@@ -138,13 +143,15 @@ void renderDisplay() {
 
     // The footer sits at y=56 so its 8-pixel cell ends exactly on row 63.
     oled::drawHLine(54);
-    if (online) {
+    if (snapshot.state == DisplayState::SetupPortal) {
+      snprintf(line, sizeof(line), "%s", WiFi.softAPIP().toString().c_str());
+    } else if (online) {
       snprintf(line, sizeof(line), "%s", WiFi.localIP().toString().c_str());
     } else {
       snprintf(line, sizeof(line), "NO WIFI");
     }
     oled::drawText(0, 56, line);
-    if (online) {
+    if (online && snapshot.state != DisplayState::SetupPortal) {
       snprintf(line, sizeof(line), "%d", WiFi.RSSI());
       oled::drawText(oled::WIDTH - 24, 56, line);
     }
@@ -621,15 +628,143 @@ bool initializeCamera() {
   return true;
 }
 
-void connectWiFi() {
+esp_err_t setupPageHandler(httpd_req_t *request) {
+  httpd_resp_set_type(request, "text/html; charset=utf-8");
+  setNoCacheHeaders(request);
+  return httpd_resp_sendstr(request, provisioning::SETUP_HTML);
+}
+
+esp_err_t scanHandler(httpd_req_t *request) {
+  const int found = WiFi.scanNetworks();
+  String json = "[";
+  for (int i = 0; i < found && i < 20; ++i) {
+    String ssid = WiFi.SSID(i);
+    if (ssid.isEmpty()) continue;
+    ssid.replace("\\", "\\\\");
+    ssid.replace("\"", "\\\"");
+    if (json.length() > 1) json += ",";
+    json += "{\"ssid\":\"" + ssid + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+  }
+  json += "]";
+  WiFi.scanDelete();
+  httpd_resp_set_type(request, "application/json");
+  setNoCacheHeaders(request);
+  return httpd_resp_sendstr(request, json.c_str());
+}
+
+esp_err_t saveWifiHandler(httpd_req_t *request) {
+  char body[256];
+  const size_t declared = request->content_len;
+  if (declared == 0 || declared >= sizeof(body)) {
+    httpd_resp_set_status(request, "413 Payload Too Large");
+    return httpd_resp_sendstr(request, "Credentials are too long");
+  }
+  const int received = httpd_req_recv(request, body, declared);
+  if (received <= 0) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return httpd_resp_sendstr(request, "Could not read the form");
+  }
+  body[received] = '\0';
+
+  const String form(body);
+  const String ssid = provisioning::formField(form, "ssid");
+  const String pass = provisioning::formField(form, "pass");
+  if (ssid.isEmpty()) {
+    httpd_resp_set_status(request, "400 Bad Request");
+    return httpd_resp_sendstr(request, "A network name is required");
+  }
+
+  if (!provisioning::save(ssid, pass)) {
+    httpd_resp_set_status(request, "500 Internal Server Error");
+    return httpd_resp_sendstr(request, "Could not store the credentials");
+  }
+  Serial.printf("[wifi] Stored credentials for \"%s\"; restarting\n", ssid.c_str());
+  setDisplay(DisplayState::Booting, "SAVED", "RESTARTING");
+  renderDisplay();
+  httpd_resp_sendstr(request, "saved");
+  delay(600);
+  ESP.restart();
+  return ESP_OK;
+}
+
+// Available in normal mode so the camera can be handed to a new location
+// without a serial cable.
+esp_err_t forgetWifiHandler(httpd_req_t *request) {
+  provisioning::clear();
+  Serial.println("[wifi] Stored credentials cleared; restarting into setup");
+  setDisplay(DisplayState::Booting, "CLEARED", "RESTARTING");
+  renderDisplay();
+  setNoCacheHeaders(request);
+  httpd_resp_sendstr(request, "cleared");
+  delay(600);
+  ESP.restart();
+  return ESP_OK;
+}
+
+bool startSetupPortal() {
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_AP);
+  if (!WiFi.softAP(provisioning::AP_SSID)) {
+    Serial.println("[wifi] Could not raise the setup access point");
+    return false;
+  }
+  Serial.printf("[wifi] Setup portal: join \"%s\" then open http://%s/\n",
+                provisioning::AP_SSID, WiFi.softAPIP().toString().c_str());
+
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = CONTROL_PORT;
+  config.ctrl_port = 32768;
+  config.max_uri_handlers = 4;
+  config.lru_purge_enable = true;
+  config.stack_size = 8192;
+
+  static const httpd_uri_t pageUri = {
+      .uri = "/", .method = HTTP_GET, .handler = setupPageHandler, .user_ctx = nullptr};
+  static const httpd_uri_t scanUri = {
+      .uri = "/scan", .method = HTTP_GET, .handler = scanHandler, .user_ctx = nullptr};
+  static const httpd_uri_t saveUri = {
+      .uri = "/wifi", .method = HTTP_POST, .handler = saveWifiHandler, .user_ctx = nullptr};
+
+  if (httpd_start(&controlServer, &config) != ESP_OK) {
+    Serial.println("[http] Could not start the setup portal");
+    return false;
+  }
+  httpd_register_uri_handler(controlServer, &pageUri);
+  httpd_register_uri_handler(controlServer, &scanUri);
+  httpd_register_uri_handler(controlServer, &saveUri);
+  return true;
+}
+
+bool connectWiFi() {
+  // Stored credentials win. secrets.h is only a convenience for a developer's
+  // own board and is ignored once this board has been provisioned or cleared.
+  const provisioning::Credentials stored = provisioning::load();
+  String ssid = stored.ssid;
+  String password = stored.password;
+  const bool provisioned = !ssid.isEmpty();
+
+  if (!provisioned) {
+    if (stored.configured) {
+      Serial.println("[wifi] No stored network; going to setup");
+      return false;
+    }
+    ssid = WIFI_SSID;
+    password = WIFI_PASSWORD;
+  }
+  if (ssid.isEmpty() || ssid == "YOUR_WIFI_NAME") {
+    Serial.println("[wifi] No credentials stored and no usable fallback");
+    return false;
+  }
+
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("esp32-solar-camera");
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(ssid.c_str(), password.c_str());
 
-  Serial.printf("[wifi] Connecting to %s", WIFI_SSID);
+  Serial.printf("[wifi] Connecting to %s (%s)", ssid.c_str(),
+                provisioned ? "stored" : "secrets.h");
   const uint32_t startedMs = millis();
   while (WiFi.status() != WL_CONNECTED &&
          millis() - startedMs < WIFI_CONNECT_TIMEOUT_MS) {
@@ -642,9 +777,10 @@ void connectWiFi() {
     Serial.printf("[wifi] Connected: http://%s  RSSI=%d dBm\n",
                   WiFi.localIP().toString().c_str(), WiFi.RSSI());
   } else {
-    Serial.println("[wifi] Initial connection timed out; retries will continue");
+    Serial.println("[wifi] Initial connection timed out");
   }
   previousWiFiStatus = WiFi.status();
+  return WiFi.status() == WL_CONNECTED;
 }
 
 bool startServers() {
@@ -667,6 +803,9 @@ bool startServers() {
       .uri = "/status", .method = HTTP_POST, .handler = statusHandler, .user_ctx = nullptr};
   static const httpd_uri_t i2cUri = {
       .uri = "/i2c", .method = HTTP_GET, .handler = i2cHandler, .user_ctx = nullptr};
+  static const httpd_uri_t forgetUri = {
+      .uri = "/forget-wifi", .method = HTTP_POST, .handler = forgetWifiHandler,
+      .user_ctx = nullptr};
 
   if (httpd_start(&controlServer, &controlConfig) != ESP_OK) {
     Serial.println("[http] Could not start control server");
@@ -677,6 +816,7 @@ bool startServers() {
   httpd_register_uri_handler(controlServer, &healthUri);
   httpd_register_uri_handler(controlServer, &statusUri);
   httpd_register_uri_handler(controlServer, &i2cUri);
+  httpd_register_uri_handler(controlServer, &forgetUri);
 
   httpd_config_t streamConfig = HTTPD_DEFAULT_CONFIG();
   streamConfig.server_port = STREAM_PORT;
@@ -751,7 +891,23 @@ void setup() {
 
   setDisplay(DisplayState::WifiConnecting, "WIFI", "CONNECTING");
   renderDisplay();
-  connectWiFi();
+
+  if (!connectWiFi()) {
+    // No usable network: raise the setup access point instead of sitting on a
+    // dead retry loop that an operator has no way to act on.
+    runMode = RunMode::Setup;
+    if (!startSetupPortal()) {
+      setDisplay(DisplayState::Failed, "SETUP FAIL", "RESTART BOARD");
+      renderDisplay();
+      return;
+    }
+    char detail[22];
+    snprintf(detail, sizeof(detail), "JOIN %s", provisioning::AP_SSID);
+    setDisplay(DisplayState::SetupPortal, "SETUP", detail);
+    renderDisplay();
+    Serial.println("[system] Running in setup mode");
+    return;
+  }
 
   if (!startServers()) {
     Serial.println("[fatal] Web server startup failed");
@@ -760,11 +916,7 @@ void setup() {
     return;
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
-    setDisplay(DisplayState::Ready, "READY", "AWAITING CAPTURE");
-  } else {
-    setDisplay(DisplayState::WifiFail, "NO WIFI", "RETRYING");
-  }
+  setDisplay(DisplayState::Ready, "READY", "AWAITING CAPTURE");
   renderDisplay();
 
   Serial.printf("[system] Free heap=%lu, free PSRAM=%lu\n",
@@ -773,7 +925,9 @@ void setup() {
 }
 
 void loop() {
-  maintainWiFi();
+  // The setup portal owns the radio while provisioning; station-mode
+  // reconnection would fight it.
+  if (runMode == RunMode::Normal) maintainWiFi();
 
   // Redraw on change, and periodically so the address and RSSI stay current
   // without flooding the I2C bus.
