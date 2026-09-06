@@ -64,7 +64,12 @@ const char PHASE3_INDEX_HTML[] PROGMEM = R"HTML(
     const $=id=>document.getElementById(id),CAPTURE_WIDTH=1600,CAPTURE_HEIGHT=1200,SVG='http://www.w3.org/2000/svg';
     const ui={stream:$('stream'),streamEmpty:$('streamEmpty'),streamBadge:$('streamBadge'),still:$('still'),captureEmpty:$('captureEmpty'),captureCaption:$('captureCaption'),captureBadge:$('captureBadge'),captureMessage:$('captureMessage'),captureButton:$('captureButton'),capturedActions:$('capturedActions'),retakeButton:$('retakeButton'),downloadButton:$('downloadButton'),annotatedButton:$('annotatedButton'),analyzeButton:$('analyzeButton'),analysisBadge:$('analysisBadge'),analysisEmpty:$('analysisEmpty'),analysisResult:$('analysisResult'),resultStatus:$('resultStatus'),qualityStatus:$('qualityStatus'),resultTitle:$('resultTitle'),resultSummary:$('resultSummary'),defectList:$('defectList'),overlay:$('defectOverlay'),overlayToggle:$('overlayToggle'),approxNote:$('approxNote'),backendUrl:$('backendUrl'),backendMessage:$('backendMessage')};
     const app={stillBlob:null,stillUrl:null,streamPaused:false,streamRetry:null,busy:false,result:null,selected:0,backend:null};
-    const defaultBackend='http://ajays-macbook-pro-2.local:8000';ui.backendUrl.value=localStorage.getItem('solarBackendUrl')||defaultBackend;
+    // The launcher opens this page with ?backend=... already filled in, so the
+    // operator never has to find or type their laptop's address.
+    const qsBackend=new URLSearchParams(location.search).get('backend');
+    if(qsBackend){try{localStorage.setItem('solarBackendUrl',qsBackend)}catch(_){}}
+    const defaultBackend='http://localhost:8000';
+    ui.backendUrl.value=qsBackend||localStorage.getItem('solarBackendUrl')||defaultBackend;
     const sleep=ms=>new Promise(r=>setTimeout(r,ms)),label=s=>String(s||'').replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());
     const setBadge=(el,text,tone='')=>{el.textContent=text;el.className=`status ${tone}`.trim()},formatBytes=n=>n?`${(n/1024).toFixed(1)} KB`:'—';
     function busy(value){app.busy=value;ui.captureButton.disabled=value;ui.retakeButton.disabled=value;ui.downloadButton.setAttribute('aria-disabled',value);ui.analyzeButton.disabled=value||!app.stillBlob}
