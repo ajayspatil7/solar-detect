@@ -113,24 +113,35 @@ def lan_address() -> str | None:
         probe.close()
 
 
-def find_camera(host_ip: str, timeout: float = 1.6) -> str | None:
+def probe_camera(address: str, timeout: float) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://{address}/health", timeout=timeout) as r:
+            body = r.read(1400).decode("utf-8", "replace")
+        return "capture_width" in body and "firmware" in body
+    except Exception:
+        return False
+
+
+def find_camera(host_ip: str, remembered: str = "") -> str | None:
+    """Check the last known address first, then sweep the subnet.
+
+    Two passes with a widening timeout: a camera on a weak link can miss a
+    short deadline, and Windows is less tolerant of large connection fan-outs
+    than macOS, so the worker count stays modest.
+    """
+    if remembered and probe_camera(remembered, 3.0):
+        return remembered
+
     network = ipaddress.ip_network(f"{host_ip}/24", strict=False)
     candidates = [str(a) for a in network.hosts()]
 
-    def probe(address: str) -> str | None:
-        try:
-            with urllib.request.urlopen(f"http://{address}/health", timeout=timeout) as r:
-                body = r.read(1400).decode("utf-8", "replace")
-            if "capture_width" in body and "firmware" in body:
-                return address
-        except Exception:
-            return None
-        return None
-
-    with ThreadPoolExecutor(max_workers=120) as pool:
-        for found in pool.map(probe, candidates):
-            if found:
-                return found
+    for timeout, workers in ((1.5, 64), (3.0, 32)):
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = pool.map(lambda a: (a, probe_camera(a, timeout)), candidates)
+            for address, ok in results:
+                if ok:
+                    return address
+        print("  Still looking (slower sweep)...")
     return None
 
 
@@ -179,8 +190,13 @@ def main() -> int:
         input("\n  Press Enter to close. ")
         return 1
 
-    print("  Looking for the camera on your Wi-Fi (about 15 seconds)...")
-    camera = find_camera(host_ip)
+    print("  Looking for the camera on your Wi-Fi...")
+    camera = find_camera(host_ip, read_env().get("CAMERA_IP", ""))
+    if camera:
+        settings = read_env()
+        if settings.get("CAMERA_IP") != camera:
+            settings["CAMERA_IP"] = camera  # remembered so the next run is instant
+            write_env(settings)
 
     backend_url = f"http://{host_ip}:{PORT}"
     if camera:
