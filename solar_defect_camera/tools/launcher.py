@@ -132,16 +132,24 @@ def find_camera(host_ip: str, remembered: str = "") -> str | None:
     if remembered and probe_camera(remembered, 3.0):
         return remembered
 
-    network = ipaddress.ip_network(f"{host_ip}/24", strict=False)
-    candidates = [str(a) for a in network.hosts()]
+    # An iPhone hotspot is always 172.20.10.0/28 -- fourteen usable addresses.
+    # Sweeping a /24 there means 240 pointless probes and a long wait, so the
+    # search starts narrow and only widens if nothing answers.
+    prefix = ".".join(host_ip.split(".")[:3])
+    if host_ip.startswith("172.20.10."):
+        passes = [([f"{prefix}.{n}" for n in range(1, 15)], 2.0, 14)]
+    else:
+        near = [f"{prefix}.{n}" for n in range(1, 26)]
+        full = [str(a) for a in ipaddress.ip_network(f"{host_ip}/24", strict=False).hosts()]
+        passes = [(near, 1.5, 25), (full, 1.5, 64), (full, 3.0, 32)]
 
-    for timeout, workers in ((1.5, 64), (3.0, 32)):
+    for index, (candidates, timeout, workers) in enumerate(passes):
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            results = pool.map(lambda a: (a, probe_camera(a, timeout)), candidates)
-            for address, ok in results:
+            for address, ok in pool.map(lambda a: (a, probe_camera(a, timeout)), candidates):
                 if ok:
                     return address
-        print("  Still looking (slower sweep)...")
+        if index + 1 < len(passes):
+            print("  Widening the search...")
     return None
 
 
