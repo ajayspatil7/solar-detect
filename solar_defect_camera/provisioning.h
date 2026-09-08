@@ -116,14 +116,14 @@ button:disabled{opacity:.55;cursor:wait}
 small{color:#74747b;font-size:.82rem}
 </style></head><body><main>
 <h1>Connect the camera to Wi-Fi</h1>
-<p class="sub">Choose your network and enter its password. The camera restarts and
-joins it automatically. It only needs doing once per location.</p>
+<p class="sub">Turn the phone hotspot on first, then enter its password below.
+The camera restarts and joins automatically. Only needed once per location.</p>
 
 <label for="ssid">Network</label>
 <select id="ssid"><option value="">Scanning…</option></select>
 
 <label for="manual">Or type the name yourself</label>
-<input id="manual" placeholder="Network name" autocomplete="off">
+<input id="manual" value="Krutika’s iPhone 14" placeholder="Network name" autocomplete="off">
 
 <label for="pass">Password</label>
 <input id="pass" type="password" placeholder="Wi-Fi password" autocomplete="off">
@@ -134,6 +134,11 @@ joins it automatically. It only needs doing once per location.</p>
 </main><script>
 const $=id=>document.getElementById(id);
 function note(text,kind){const m=$('msg');m.textContent=text;m.className=kind}
+// The demo always runs on one hotspot. If the scan sees it, select the exact
+// scanned name -- iOS device names use a typographic apostrophe, so a hand-typed
+// ASCII one would silently fail to match.
+const TARGET='Krutika’s iPhone 14';
+const norm=s=>s.replace(/[\u2018\u2019\u02bc']/g,"'").toLowerCase().trim();
 async function scan(){
   try{
     const r=await fetch('/scan');const nets=await r.json();
@@ -141,6 +146,9 @@ async function scan(){
     if(!nets.length){sel.innerHTML='<option value="">No networks found</option>';return}
     nets.forEach(n=>{const o=document.createElement('option');
       o.value=n.ssid;o.textContent=`${n.ssid}  (${n.rssi} dBm)`;sel.appendChild(o)});
+    const match=nets.find(n=>norm(n.ssid)===norm(TARGET));
+    if(match){sel.value=match.ssid;$('manual').value='';
+      note('Found '+match.ssid+'. Just enter the password below.','ok')}
   }catch(e){note('Could not scan for networks. Reload the page.','bad')}
 }
 $('save').addEventListener('click',async()=>{
