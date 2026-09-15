@@ -855,6 +855,41 @@ launcher, instead of needing someone to provision it by phone.
   802.1X, 5 GHz-only, or client isolation cannot work. The Wi-Fi switching path
   is untested until run on the Windows laptop.
 
+### 6.5 Multi-network memory and SD verification — 2026-09-15, on hardware
+
+**SD card verified on this board** with `tools/sd_probe`: a 64 GB SDHC/SDXC
+card formatted on macOS as MS-DOS (FAT) with a Master Boot Record mounted in
+1-bit SDMMC mode. 59.45 GB usable; a 70,000-byte file wrote in 42 ms, read back
+in 30 ms, checksum matched. The card must be removed while flashing, because
+its data line shares strapping pin GPIO2 and blocks entry to the bootloader.
+
+**The camera now remembers up to five networks** (NVS keys `ssid0..4`,
+`pass0..4`, `count`; single-network boards migrate automatically). At boot it
+scans once and tries only saved networks that are in range, strongest first.
+With nothing familiar nearby it reaches setup mode in a few seconds instead of
+a 20-second timeout per network. Saving a network moves it to the front.
+
+**Networks can be added over USB** while stacked on the MB with
+`tools/add_wifi_usb.py` (serial commands `WIFI_ADD`, `WIFI_LIST`,
+`WIFI_FORGET`). The password is typed at a hidden prompt and never enters
+firmware or version control. The developer's home network was saved this way;
+`WIFI_LIST` returned it plus `Krutika’s iPhone 14`, and a check of the full
+serial log confirmed the password never appeared. Once SD firmware moves OLED
+SCL to IO3 (U0RXD), these commands only work with the camera stacked on the MB.
+
+**Camera probe retry.** One cold boot failed with `SCCB_Read addr phase failed
+addr:0x30` / `0x106` and recovered on the next reset. Startup now retries up
+to three times, power-cycling the sensor via PWDN between attempts.
+
+Verified after a final cold boot: camera ready, `2 saved network(s), 1 in
+range`, joined the home network automatically, `/health` reachable from the Mac
+with `mode: normal`, firmware `3.2.0-phase6`, 1,061,341 bytes (33%), no
+warnings. The firmware image itself carries only placeholder credentials.
+
+Security note: the home Wi-Fi password now lives in the camera's NVS, which is
+not encrypted. Send `WIFI_FORGET` (or remove it) before the device returns to
+the client.
+
 ## Future phases
 
 - **Phase 4:** Replace/revoke the exposed no-credit test key, run a curated real

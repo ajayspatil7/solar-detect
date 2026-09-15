@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <climits>
 #include <WiFi.h>
 #include "esp_camera.h"
 #include "esp_http_server.h"
@@ -607,7 +608,7 @@ bool initializeCamera() {
     Serial.println("[camera] Sensor handle unavailable");
     return false;
   }
-  cameraMutex = xSemaphoreCreateMutex();
+  if (cameraMutex == nullptr) cameraMutex = xSemaphoreCreateMutex();
   if (cameraMutex == nullptr) {
     Serial.println("[camera] Could not create camera lock");
     return false;
@@ -749,23 +750,15 @@ bool startSetupPortal() {
 }
 
 bool connectWiFi() {
-  // Stored credentials win. secrets.h is only a convenience for a developer's
-  // own board and is ignored once this board has been provisioned or cleared.
-  const provisioning::Credentials stored = provisioning::load();
-  String ssid = stored.ssid;
-  String password = stored.password;
-  const bool provisioned = !ssid.isEmpty();
-
-  if (!provisioned) {
-    if (stored.configured) {
-      Serial.println("[wifi] No stored network; going to setup");
-      return false;
-    }
-    ssid = WIFI_SSID;
-    password = WIFI_PASSWORD;
+  provisioning::SavedNetworks saved = provisioning::load();
+  // secrets.h is only a convenience for a developer's own board, and only
+  // until the board has been provisioned or cleared.
+  const String fallback = WIFI_SSID;
+  if (saved.count == 0 && !saved.configured && !fallback.isEmpty() && fallback != "YOUR_WIFI_NAME") {
+    saved.items[saved.count++] = {fallback, String(WIFI_PASSWORD)};
   }
-  if (ssid.isEmpty() || ssid == "YOUR_WIFI_NAME") {
-    Serial.println("[wifi] No credentials stored and no usable fallback");
+  if (saved.count == 0) {
+    Serial.println("[wifi] No saved networks; going to setup");
     return false;
   }
 
@@ -774,26 +767,104 @@ bool connectWiFi() {
   WiFi.setHostname("esp32-solar-camera");
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
-  WiFi.begin(ssid.c_str(), password.c_str());
 
-  Serial.printf("[wifi] Connecting to %s (%s)", ssid.c_str(),
-                provisioned ? "stored" : "secrets.h");
-  const uint32_t startedMs = millis();
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - startedMs < WIFI_CONNECT_TIMEOUT_MS) {
-    delay(250);
-    Serial.print('.');
+  // Scan once and try only saved networks that are actually in range,
+  // strongest first. With nothing familiar nearby this reaches setup mode in a
+  // few seconds instead of timing out on every remembered network.
+  int found = WiFi.scanNetworks();
+  if (found <= 0) found = WiFi.scanNetworks();
+
+  struct Candidate {
+    uint8_t index;
+    int rssi;
+  };
+  Candidate candidates[provisioning::MAX_NETWORKS];
+  uint8_t inRange = 0;
+  for (uint8_t i = 0; i < saved.count; ++i) {
+    int best = INT_MIN;
+    for (int j = 0; j < found; ++j) {
+      if (WiFi.SSID(j) == saved.items[i].ssid && WiFi.RSSI(j) > best) best = WiFi.RSSI(j);
+    }
+    if (best != INT_MIN) candidates[inRange++] = {i, best};
   }
-  Serial.println();
+  WiFi.scanDelete();
+  for (uint8_t i = 1; i < inRange; ++i) {  // at most five entries: insertion sort
+    const Candidate key = candidates[i];
+    uint8_t j = i;
+    while (j > 0 && candidates[j - 1].rssi < key.rssi) {
+      candidates[j] = candidates[j - 1];
+      --j;
+    }
+    candidates[j] = key;
+  }
+  Serial.printf("[wifi] %u saved network(s), %u in range\n", saved.count, inRange);
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("[wifi] Connected: http://%s  RSSI=%d dBm\n",
-                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
-  } else {
-    Serial.println("[wifi] Initial connection timed out");
+  for (uint8_t c = 0; c < inRange; ++c) {
+    const provisioning::Network &net = saved.items[candidates[c].index];
+    WiFi.begin(net.ssid.c_str(), net.password.c_str());
+    Serial.printf("[wifi] Connecting to %s (%d dBm)", net.ssid.c_str(), candidates[c].rssi);
+    const uint32_t startedMs = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startedMs < WIFI_CONNECT_TIMEOUT_MS) {
+      delay(250);
+      Serial.print('.');
+    }
+    Serial.println();
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("[wifi] Connected: http://%s  RSSI=%d dBm\n",
+                    WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      previousWiFiStatus = WiFi.status();
+      return true;
+    }
+    Serial.println("[wifi] Could not join; trying the next saved network");
+    WiFi.disconnect(false, false);
+    delay(200);
   }
   previousWiFiStatus = WiFi.status();
-  return WiFi.status() == WL_CONNECTED;
+  return false;
+}
+
+// Adds a network over USB while the camera is stacked on the programmer, so a
+// home network can be saved without its password ever entering firmware
+// source or version control. Passwords are never echoed back.
+//   WIFI_ADD <ssid><TAB><password>   save, then restart onto it
+//   WIFI_LIST                        print saved network names
+//   WIFI_FORGET                      clear every saved network
+void handleSerialCommands() {
+  static String line;
+  while (Serial.available()) {
+    const char ch = static_cast<char>(Serial.read());
+    if (ch == '\r') continue;
+    if (ch != '\n') {
+      if (line.length() < 200) line += ch;
+      continue;
+    }
+    const String command = line;
+    line = "";
+    if (command.startsWith("WIFI_ADD ")) {
+      const int tab = command.indexOf('\t', 9);
+      const String ssid = tab > 9 ? command.substring(9, tab) : String();
+      if (ssid.isEmpty() || !provisioning::save(ssid, command.substring(tab + 1))) {
+        Serial.println("WIFI_ERROR expected WIFI_ADD <ssid><TAB><password>");
+        continue;
+      }
+      Serial.printf("WIFI_SAVED %s\n", ssid.c_str());
+      Serial.flush();
+      delay(300);
+      ESP.restart();
+    } else if (command == "WIFI_LIST") {
+      const provisioning::SavedNetworks saved = provisioning::load();
+      Serial.printf("WIFI_LIST %u\n", saved.count);
+      for (uint8_t i = 0; i < saved.count; ++i) {
+        Serial.printf("  %u. %s\n", static_cast<unsigned>(i + 1), saved.items[i].ssid.c_str());
+      }
+    } else if (command == "WIFI_FORGET") {
+      provisioning::clear();
+      Serial.println("WIFI_FORGOTTEN");
+      Serial.flush();
+      delay(300);
+      ESP.restart();
+    }
+  }
 }
 
 bool startServers() {
@@ -909,8 +980,25 @@ void setup() {
              boots == provisioning::RESET_REPLUGS - 1 ? "REPLUG FOR SETUP" : "CAMERA INIT");
   renderDisplay();
 
-  if (!initializeCamera()) {
+  // The OV2640 occasionally misses its first probe at power-on (seen on this
+  // board as "SCCB_Read addr phase failed"). Power-cycling the sensor through
+  // PWDN and trying again recovers it, where a single attempt would leave a
+  // demo unit looking dead.
+  bool cameraReady = false;
+  for (uint8_t attempt = 1; attempt <= 3 && !cameraReady; ++attempt) {
+    cameraReady = initializeCamera();
+    if (cameraReady) break;
+    Serial.printf("[camera] Attempt %u failed; power-cycling the sensor\n", attempt);
+    esp_camera_deinit();
+    pinMode(PWDN_GPIO_NUM, OUTPUT);
+    digitalWrite(PWDN_GPIO_NUM, HIGH);
+    delay(150);
+    digitalWrite(PWDN_GPIO_NUM, LOW);
+    delay(250);
+  }
+  if (!cameraReady) {
     Serial.println("[fatal] Camera startup failed; restart after checking configuration");
+    Serial.println("SERIAL_READY");
     setDisplay(DisplayState::CameraFail, "CAMERA FAIL", "CHECK RIBBON");
     renderDisplay();
     return;
@@ -934,6 +1022,7 @@ void setup() {
     setDisplay(DisplayState::SetupPortal, "SETUP", detail);
     renderDisplay();
     Serial.println("[system] Running in setup mode");
+    Serial.println("SERIAL_READY");
     return;
   }
 
@@ -947,6 +1036,7 @@ void setup() {
   setDisplay(DisplayState::Ready, "READY", "AWAITING CAPTURE");
   renderDisplay();
 
+  Serial.println("SERIAL_READY");
   Serial.printf("[system] Free heap=%lu, free PSRAM=%lu\n",
                 static_cast<unsigned long>(ESP.getFreeHeap()),
                 static_cast<unsigned long>(ESP.getFreePsram()));
@@ -956,6 +1046,7 @@ void loop() {
   // The setup portal owns the radio while provisioning; station-mode
   // reconnection would fight it.
   if (runMode == RunMode::Normal) maintainWiFi();
+  handleSerialCommands();
 
   // Redraw on change, and periodically so the address and RSSI stay current
   // without flooding the I2C bus.

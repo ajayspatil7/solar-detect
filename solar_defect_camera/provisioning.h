@@ -29,34 +29,87 @@ constexpr char AP_ADDRESS[] = "192.168.4.1";
 constexpr uint8_t RESET_REPLUGS = 3;
 constexpr uint32_t RESET_WINDOW_MS = 8000;
 
-struct Credentials {
+// Up to MAX_NETWORKS are remembered, most recently saved first, so the camera
+// can move between known places -- home, office, a client's hotspot -- without
+// being re-provisioned each time.
+constexpr uint8_t MAX_NETWORKS = 5;
+
+struct Network {
   String ssid;
   String password;
+};
+
+struct SavedNetworks {
+  Network items[MAX_NETWORKS];
+  uint8_t count = 0;
   // True once the operator has saved or cleared a network on this board. From
   // then on the compiled secrets.h fallback is ignored, so "forget" cannot
   // silently rejoin whichever network the firmware was built against.
   bool configured = false;
 };
 
-inline Credentials load() {
-  Credentials c;
-  Preferences prefs;
-  if (!prefs.begin(NAMESPACE, true)) return c;
-  c.configured = prefs.getBool("configured", false);
-  c.ssid = prefs.getString("ssid", "");
-  c.password = prefs.getString("pass", "");
-  prefs.end();
-  return c;
+inline void keyName(char *out, size_t size, const char *prefix, uint8_t index) {
+  snprintf(out, size, "%s%u", prefix, static_cast<unsigned>(index));
 }
 
-inline bool save(const String &ssid, const String &password) {
+inline SavedNetworks load() {
+  SavedNetworks saved;
+  Preferences prefs;
+  if (!prefs.begin(NAMESPACE, true)) return saved;
+  saved.configured = prefs.getBool("configured", false);
+  const uint8_t count = prefs.isKey("count") ? prefs.getUChar("count", 0) : 0;
+  for (uint8_t i = 0; i < count && i < MAX_NETWORKS; ++i) {
+    char ssidKey[16], passKey[16];
+    keyName(ssidKey, sizeof(ssidKey), "ssid", i);
+    keyName(passKey, sizeof(passKey), "pass", i);
+    if (!prefs.isKey(ssidKey)) continue;
+    const String ssid = prefs.getString(ssidKey, "");
+    if (ssid.isEmpty()) continue;
+    saved.items[saved.count++] = {ssid, prefs.isKey(passKey) ? prefs.getString(passKey, "") : String()};
+  }
+  // Boards provisioned by the previous firmware stored exactly one network.
+  if (saved.count == 0 && prefs.isKey("ssid")) {
+    const String legacy = prefs.getString("ssid", "");
+    if (!legacy.isEmpty()) {
+      saved.items[saved.count++] = {legacy, prefs.isKey("pass") ? prefs.getString("pass", "") : String()};
+    }
+  }
+  prefs.end();
+  return saved;
+}
+
+inline bool writeAll(const SavedNetworks &saved) {
   Preferences prefs;
   if (!prefs.begin(NAMESPACE, false)) return false;
-  const bool ok = prefs.putString("ssid", ssid) > 0;
-  prefs.putString("pass", password);
+  for (uint8_t i = 0; i < MAX_NETWORKS; ++i) {
+    char ssidKey[16], passKey[16];
+    keyName(ssidKey, sizeof(ssidKey), "ssid", i);
+    keyName(passKey, sizeof(passKey), "pass", i);
+    if (i < saved.count) {
+      prefs.putString(ssidKey, saved.items[i].ssid);
+      prefs.putString(passKey, saved.items[i].password);
+    } else {
+      if (prefs.isKey(ssidKey)) prefs.remove(ssidKey);
+      if (prefs.isKey(passKey)) prefs.remove(passKey);
+    }
+  }
+  prefs.putUChar("count", saved.count);
   prefs.putBool("configured", true);
+  if (prefs.isKey("ssid")) prefs.remove("ssid");
+  if (prefs.isKey("pass")) prefs.remove("pass");
   prefs.end();
-  return ok;
+  return true;
+}
+
+// Saving a network moves it to the front; the oldest drops off when full.
+inline bool save(const String &ssid, const String &password) {
+  const SavedNetworks current = load();
+  SavedNetworks next;
+  next.items[next.count++] = {ssid, password};
+  for (uint8_t i = 0; i < current.count && next.count < MAX_NETWORKS; ++i) {
+    if (current.items[i].ssid != ssid) next.items[next.count++] = current.items[i];
+  }
+  return writeAll(next);
 }
 
 // Forgets the network but keeps the board under operator control, so the next
@@ -78,12 +131,7 @@ inline void clearBootCount() {
 }
 
 inline void clear() {
-  Preferences prefs;
-  if (!prefs.begin(NAMESPACE, false)) return;
-  prefs.putString("ssid", "");
-  prefs.putString("pass", "");
-  prefs.putBool("configured", true);
-  prefs.end();
+  writeAll(SavedNetworks{});
 }
 
 // Percent-decoding keeps Wi-Fi passwords intact whatever characters they use;
