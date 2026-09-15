@@ -784,6 +784,23 @@ shows it.
   thermography, I-V curve), never as a confirmed diagnosis.
 - Operator context (panel age, cleaning, weather) was considered and declined.
 
+**Implemented 2026-09-15, backend `3.2.0-phase6`:**
+
+- `backend/root_causes.json`: 19 causes, each with title, applicable defect
+  types, explanation, verification steps, action and urgency. Validated at
+  startup; a malformed file stops the service rather than serving bad guidance.
+- The prompt's per-type cause list is generated from that file, so it cannot
+  drift from the knowledge base.
+- A cause inconsistent with its defect type is corrected to `undetermined`
+  with `corrected: true`. Cause confidence is capped at defect confidence.
+  `undetermined` takes its urgency from the defect severity.
+- Response gains `defects[].root_cause` and top-level `priority`. All changes
+  are additive, so the ESP32-served page keeps working without a reflash.
+- `max_output_tokens` raised from 1,200 to 2,400 for the extra fields.
+- Strict JSON schema generation verified offline against the OpenAI SDK.
+  Backend suite: 16 tests passing (5 existing, 11 new). Not yet exercised
+  against the live API on a real defective panel.
+
 ### 6.2 Storage — decided: microSD on the ESP32
 
 - Internal flash was rejected: the largest filesystem partition is 2 MB

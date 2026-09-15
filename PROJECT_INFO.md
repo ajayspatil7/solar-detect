@@ -9,7 +9,7 @@ device itself.**
 |---|---|
 | **Status** | Working prototype, hardware complete, detection quality not yet validated |
 | **Firmware** | `3.1.0-phase5` — 1,055,105 bytes (33% of flash), 59,808 bytes RAM (18%) |
-| **Backend** | `3.1.0-phase4` — Python 3.11, FastAPI |
+| **Backend** | `3.2.0-phase6` — Python 3.11, FastAPI, with probable root-cause analysis |
 | **Source size** | ~2,200 lines across firmware, backend, browser UI, and tooling |
 | **Repository** | https://github.com/ajayspatil7/solar-detect (public, no secrets) |
 | **Last updated** | 2026-09-07 |
@@ -203,6 +203,11 @@ FastAPI service on port 8000. Two endpoints: `GET /health`, `POST /analyze`.
 - Model returns coordinates normalised `0..1000`; the backend clamps, orders and
   converts to pixels, so a malformed box cannot produce an off-image rectangle
 - Results capped at eight regions
+- **Probable root cause per defect**: the model must pick from a fixed list of 19 causes
+  valid for that defect type, and cite visual evidence; a mismatched pick is corrected
+  to `undetermined`. Explanation, how to confirm, action and urgency come from the
+  reviewed `backend/root_causes.json`, never from model free text. Cause confidence
+  is capped at the defect's own confidence
 - Contradictions are corrected: a `defect_suspected` verdict with no regions is
   downgraded to `uncertain`, and vice versa
 - OpenAI work runs outside the async event loop and is serialised, so health
@@ -258,11 +263,23 @@ fan-outs far more aggressively than macOS, which broke the first attempt.
       "severity": "medium",
       "confidence": "medium",
       "description": "Possible localized discoloration.",
-      "bounding_box": { "x_min": 904, "y_min": 294, "x_max": 1264, "y_max": 630 }
+      "bounding_box": { "x_min": 904, "y_min": 294, "x_max": 1264, "y_max": 630 },
+      "root_cause": {
+        "id": "encapsulant_browning",
+        "title": "Encapsulant yellowing or browning",
+        "explanation": "The EVA layer ... degrades under years of ultraviolet exposure and heat ...",
+        "evidence": "Even brown tint across whole cells rather than a spot or line.",
+        "confidence": "medium",
+        "verify_with": ["I-V curve test to measure power loss"],
+        "action": "Monitor output over time. Replace if loss exceeds the warranty threshold.",
+        "urgency": "medium",
+        "corrected": false
+      }
     }
   ],
   "summary": "A visible region is marked for review.",
   "retake_required": false,
+  "priority": "medium",
   "meta": {
     "mode": "openai",
     "model": "gpt-5.6-luna",
@@ -275,7 +292,8 @@ fan-outs far more aggressively than macOS, which broke the first attempt.
 ```
 
 **Status values:** `defect_suspected`, `no_visible_defect`, `uncertain`, `retake_required`
-**Defect types:** `possible_surface_crack`, `discoloration`, `soiling`, `burn_mark`, `shading`, `other_visible_anomaly`
+**Defect types:** `possible_surface_crack`, `discoloration`, `soiling`, `burn_mark`, `shading`, `snail_trail`, `delamination`, `other_visible_anomaly`
+**Root cause urgency:** `low`, `medium`, `high`, `urgent` — **inspection priority** is the most urgent cause, or `none`
 **Severity and confidence:** `low`, `medium`, `high`
 **Image quality:** `acceptable`, `borderline`, `insufficient`
 
@@ -386,6 +404,7 @@ plainly in any build instructions.
 | **5** | OLED status display, soldered and verified on hardware |
 | **4** | *In progress* — real-key smoke test passed; detection calibration outstanding |
 | **Handover** | Wi-Fi provisioning, one-click Windows launcher, public repository |
+| **6** | *In progress* — probable root-cause analysis done; microSD record store and laptop dashboard next |
 
 ---
 

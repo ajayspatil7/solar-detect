@@ -1,0 +1,157 @@
+{
+  "_about": "Curated probable-cause knowledge base. The model may only choose a cause id from this file, and only one listed as applying to the defect type it found. Wording here is returned verbatim, so edit it here rather than in code. Urgency: low, medium, high, urgent. An urgency of null means 'derive from the defect severity'.",
+  "causes": {
+    "dust_accumulation": {
+      "title": "Dust and airborne particulate build-up",
+      "applies_to": ["soiling"],
+      "explanation": "An even film of dust, sand or pollution residue settles on the glass and reduces the light reaching the cells. It builds fastest in dry, windy or industrial locations and between rains.",
+      "verify_with": ["Compare output before and after cleaning", "Inspect the full array for a uniform film"],
+      "action": "Clean with soft water and a non-abrasive brush. Set a cleaning interval based on local dust conditions.",
+      "urgency": "low"
+    },
+    "bird_droppings": {
+      "title": "Bird droppings",
+      "applies_to": ["soiling"],
+      "explanation": "Droppings are opaque and localised. Unlike an even dust film, they can fully shade individual cells and force them to heat up, which can develop into a hotspot if left in place.",
+      "verify_with": ["Close visual inspection", "Infrared thermography of the affected cells"],
+      "action": "Remove promptly. Consider bird deterrents if the array is used as a perch.",
+      "urgency": "medium"
+    },
+    "organic_growth": {
+      "title": "Moss, lichen or algae growth",
+      "applies_to": ["soiling"],
+      "explanation": "Biological growth takes hold where moisture and dirt collect, usually along the lower frame edge in humid or shaded locations.",
+      "verify_with": ["Close visual inspection of frame edges"],
+      "action": "Clean gently without scraping the glass. Improve drainage or tilt if growth recurs.",
+      "urgency": "low"
+    },
+    "edge_soiling_low_tilt": {
+      "title": "Edge soiling from water pooling",
+      "applies_to": ["soiling"],
+      "explanation": "On shallow tilt angles, rainwater pools against the lower frame and deposits dirt as it evaporates, forming a band that repeatedly shades the bottom row of cells.",
+      "verify_with": ["Check for a band along the lower edge", "Measure the mounting tilt angle"],
+      "action": "Clean the lower edge. Consider a steeper tilt or frameless edges if the band keeps returning.",
+      "urgency": "low"
+    },
+    "encapsulant_browning": {
+      "title": "Encapsulant yellowing or browning",
+      "applies_to": ["discoloration"],
+      "explanation": "The EVA layer that bonds the cells to the glass degrades under years of ultraviolet exposure and heat, turning yellow or brown and transmitting less light. It is an ageing effect and usually progresses slowly.",
+      "verify_with": ["I-V curve test to measure power loss", "Compare with the module's rated output and age"],
+      "action": "Monitor output over time. Replace the module if power loss exceeds the warranty threshold.",
+      "urgency": "medium"
+    },
+    "metallization_corrosion": {
+      "title": "Corrosion of cell contacts or ribbons",
+      "applies_to": ["discoloration", "delamination"],
+      "explanation": "Moisture that has entered the module corrodes the metal contacts and interconnect ribbons, showing as dark or discoloured lines and patches. Resistance rises and output falls as it spreads.",
+      "verify_with": ["I-V curve test", "Electroluminescence imaging", "Insulation resistance test"],
+      "action": "Schedule replacement. Check neighbouring modules for the same moisture exposure.",
+      "urgency": "high"
+    },
+    "localized_overheating": {
+      "title": "Localised overheating",
+      "applies_to": ["discoloration", "burn_mark"],
+      "explanation": "A cell or connection that runs persistently hotter than its neighbours discolours the materials around it. This is often the early stage of a burn mark.",
+      "verify_with": ["Infrared thermography under stable sunlight"],
+      "action": "Confirm with thermography before the next inspection cycle. Replace the module if a hotspot is confirmed.",
+      "urgency": "high"
+    },
+    "mechanical_impact": {
+      "title": "Mechanical impact",
+      "applies_to": ["possible_surface_crack"],
+      "explanation": "Hail, stones, falling branches or tools can crack the glass and the cells beneath it. A radiating or star pattern around a single point strongly suggests impact.",
+      "verify_with": ["Electroluminescence imaging", "Insulation resistance test", "Check for recent hail or storm events"],
+      "action": "Isolate the module. Cracked glass lets moisture in and can become an electrical safety hazard. Replace and file an insurance claim if weather caused it.",
+      "urgency": "high"
+    },
+    "installation_or_handling_stress": {
+      "title": "Installation or handling stress",
+      "applies_to": ["possible_surface_crack", "snail_trail"],
+      "explanation": "Over-tightened clamps, walking on the module, or rough transport bends the panel and cracks cells, often without breaking the glass. Cracks near clamp points suggest this cause.",
+      "verify_with": ["Electroluminescence imaging", "Inspect clamp positions and torque"],
+      "action": "Correct the mounting. Replace the module if cracks affect output.",
+      "urgency": "medium"
+    },
+    "thermal_or_structural_stress": {
+      "title": "Thermal cycling or structural stress",
+      "applies_to": ["possible_surface_crack", "delamination"],
+      "explanation": "Daily heating and cooling, or a frame that flexes under wind load, repeatedly stresses the laminate until cells crack or layers separate.",
+      "verify_with": ["Electroluminescence imaging", "Inspect the mounting structure for flex or distortion"],
+      "action": "Stiffen or correct the mounting. Replace affected modules.",
+      "urgency": "medium"
+    },
+    "hotspot_cell_mismatch": {
+      "title": "Hotspot from a damaged or mismatched cell",
+      "applies_to": ["burn_mark"],
+      "explanation": "A cracked or weaker cell cannot carry the same current as the rest of its string, so it dissipates energy as heat instead of producing it. Sustained heating burns the surrounding materials.",
+      "verify_with": ["Infrared thermography under stable sunlight", "I-V curve test"],
+      "action": "Disconnect and replace the module. Burn marks indicate sustained high temperature and are a fire risk.",
+      "urgency": "urgent"
+    },
+    "hotspot_partial_shading": {
+      "title": "Hotspot from persistent partial shading",
+      "applies_to": ["burn_mark", "shading"],
+      "explanation": "When part of a module stays shaded for long periods, the shaded cells are driven into reverse bias and heat up while the rest of the string pushes current through them.",
+      "verify_with": ["Infrared thermography", "Shading survey across the day"],
+      "action": "Remove the source of shade. Replace the module if burn damage is present.",
+      "urgency": "high"
+    },
+    "bypass_diode_failure": {
+      "title": "Failed bypass diode",
+      "applies_to": ["burn_mark"],
+      "explanation": "Bypass diodes route current around a shaded or damaged section of cells. If one fails, that section can no longer be bypassed and overheats. Damage often follows a third of the module, matching one diode's section.",
+      "verify_with": ["Infrared thermography", "Bypass diode test at the junction box"],
+      "action": "Disconnect the module. Replace the diode or the module. A failed diode is a fire risk.",
+      "urgency": "urgent"
+    },
+    "connection_fault": {
+      "title": "High-resistance connection",
+      "applies_to": ["burn_mark", "discoloration"],
+      "explanation": "A poor solder joint or loose ribbon connection has high electrical resistance and heats under load. Damage concentrated on a busbar or at the junction box end suggests this cause.",
+      "verify_with": ["Infrared thermography", "Junction box inspection"],
+      "action": "Disconnect immediately. High-resistance joints can arc and start fires.",
+      "urgency": "urgent"
+    },
+    "external_obstruction": {
+      "title": "Shade from a nearby object",
+      "applies_to": ["shading"],
+      "explanation": "A building, pole, antenna, tree or new vegetation casts a shadow across part of the array. Shading from growth or construction often appears gradually over months.",
+      "verify_with": ["Shading survey at several times of day", "Check for recent construction or plant growth"],
+      "action": "Trim vegetation or relocate the obstruction where possible. Otherwise review string layout.",
+      "urgency": "medium"
+    },
+    "microcracks_with_moisture": {
+      "title": "Micro-cracks reacting with moisture",
+      "applies_to": ["snail_trail"],
+      "explanation": "Snail trails are dark, winding lines that follow invisible micro-cracks in a cell. Moisture reaches the cracks and reacts with the cell's silver paste, making the crack pattern visible.",
+      "verify_with": ["Electroluminescence imaging to map the cracks", "I-V curve test"],
+      "action": "Monitor output. Replace if power loss is significant; the cracks themselves will not heal.",
+      "urgency": "medium"
+    },
+    "moisture_ingress": {
+      "title": "Moisture ingress",
+      "applies_to": ["delamination", "discoloration"],
+      "explanation": "Failed edge seals or a damaged backsheet let water vapour into the laminate, where it weakens bonding between layers and corrodes the cell contacts.",
+      "verify_with": ["Inspect edge seals and backsheet", "Insulation resistance test", "Infrared thermography"],
+      "action": "Replace the module. Moisture inside a module is an electrical insulation risk.",
+      "urgency": "high"
+    },
+    "manufacturing_defect": {
+      "title": "Manufacturing defect",
+      "applies_to": ["delamination", "discoloration"],
+      "explanation": "Poor lamination, contamination trapped during production, or inconsistent materials show up as bubbles, separation or uneven colour, often early in the module's life.",
+      "verify_with": ["Compare with other modules from the same batch", "Check installation date against warranty"],
+      "action": "Document with photographs and file a warranty claim with the manufacturer.",
+      "urgency": "high"
+    },
+    "undetermined": {
+      "title": "Cause not determinable from the image",
+      "applies_to": ["*"],
+      "explanation": "The visible evidence is not specific enough to attribute a probable cause. An on-site inspection is needed.",
+      "verify_with": ["On-site inspection by a qualified technician"],
+      "action": "Inspect the module in person before deciding on any action.",
+      "urgency": null
+    }
+  }
+}
