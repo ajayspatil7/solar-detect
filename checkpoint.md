@@ -825,6 +825,36 @@ shows it.
   Diagnostics behind a single status indicator.
 - A clickable mockup is to be approved before implementation.
 
+### 6.4 Follow-the-laptop Wi-Fi — built 2026-09-15, not yet on hardware
+
+The camera now joins whatever Wi-Fi the Windows laptop is using, driven by the
+launcher, instead of needing someone to provision it by phone.
+
+- If the launcher cannot find the camera, it reads the laptop's current network
+  with `netsh wlan show interfaces`, waits for `SOLAR-SETUP` to appear, briefly
+  switches the laptop to it, confirms the camera via `GET /health` in setup
+  mode, posts the network name and password to `/wifi`, and switches back.
+  The reconnect runs in a `finally`, so the laptop is returned to its network
+  even if a step fails.
+- The saved password is read with `netsh ... key=clear`. Windows usually only
+  reveals it to an elevated prompt, so the launcher asks for it when absent.
+- `netsh` output is read through `chcp 65001`: the default console code page
+  mangles names such as `Krutika’s iPhone 14`, and a mangled profile name
+  cannot be reconnected to.
+- Enterprise (802.1X) networks are refused with an explanation; 5 GHz use is
+  warned about, since dual-band routers usually still work.
+- **Three quick replugs force setup mode** (firmware boot counter in NVS,
+  cleared by a task after 8 s of uptime). This covers a camera still connected
+  to an old network that remains in range. On the second replug the OLED shows
+  `REPLUG FOR SETUP`.
+- The hardcoded demo-hotspot pre-fill was removed from the setup page.
+- Firmware `3.2.0-phase6`, 1,055,877 bytes (33%), no warnings. `/health` now
+  reports `mode`. Parser tests for `netsh` output added; 21 tests passing.
+- Known limitations: the credentials cross the open `SOLAR-SETUP` network in
+  clear text during the few-second hand-over; networks with a login page,
+  802.1X, 5 GHz-only, or client isolation cannot work. The Wi-Fi switching path
+  is untested until run on the Windows laptop.
+
 ## Future phases
 
 - **Phase 4:** Replace/revoke the exposed no-credit test key, run a curated real

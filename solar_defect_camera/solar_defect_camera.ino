@@ -31,6 +31,7 @@ namespace {
 
 constexpr uint16_t CONTROL_PORT = 80;
 constexpr uint16_t STREAM_PORT = 81;
+#define FIRMWARE_VERSION "3.2.0-phase6"
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 10000;
 constexpr uint32_t STREAM_LOG_INTERVAL_FRAMES = 30;
@@ -242,7 +243,7 @@ esp_err_t healthHandler(httpd_req_t *request) {
       "\"capture_width\":%u,\"capture_height\":%u,"
       "\"oled\":{\"present\":%s,\"address\":\"0x%02x\",\"controller\":\"%s\","
       "\"width\":%u,\"height\":%u},"
-      "\"uptime_ms\":%lu,\"firmware\":\"3.1.0-phase5\"}",
+      "\"uptime_ms\":%lu,\"mode\":\"normal\",\"firmware\":\"" FIRMWARE_VERSION "\"}",
       cameraReady ? "true" : "false",
       WiFi.status() == WL_CONNECTED ? "true" : "false", ip.c_str(), WiFi.RSSI(),
       static_cast<unsigned long>(ESP.getFreeHeap()),
@@ -628,6 +629,15 @@ bool initializeCamera() {
   return true;
 }
 
+// Lets the laptop launcher confirm it has reached the camera's setup network,
+// not some other device, before it sends Wi-Fi credentials.
+esp_err_t setupHealthHandler(httpd_req_t *request) {
+  httpd_resp_set_type(request, "application/json");
+  setNoCacheHeaders(request);
+  return httpd_resp_sendstr(request,
+      "{\"mode\":\"setup\",\"device\":\"solar-inspector\",\"firmware\":\"" FIRMWARE_VERSION "\"}");
+}
+
 esp_err_t setupPageHandler(httpd_req_t *request) {
   httpd_resp_set_type(request, "text/html; charset=utf-8");
   setNoCacheHeaders(request);
@@ -714,7 +724,7 @@ bool startSetupPortal() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = CONTROL_PORT;
   config.ctrl_port = 32768;
-  config.max_uri_handlers = 4;
+  config.max_uri_handlers = 5;
   config.lru_purge_enable = true;
   config.stack_size = 8192;
 
@@ -722,6 +732,8 @@ bool startSetupPortal() {
       .uri = "/", .method = HTTP_GET, .handler = setupPageHandler, .user_ctx = nullptr};
   static const httpd_uri_t scanUri = {
       .uri = "/scan", .method = HTTP_GET, .handler = scanHandler, .user_ctx = nullptr};
+  static const httpd_uri_t setupHealthUri = {
+      .uri = "/health", .method = HTTP_GET, .handler = setupHealthHandler, .user_ctx = nullptr};
   static const httpd_uri_t saveUri = {
       .uri = "/wifi", .method = HTTP_POST, .handler = saveWifiHandler, .user_ctx = nullptr};
 
@@ -732,6 +744,7 @@ bool startSetupPortal() {
   httpd_register_uri_handler(controlServer, &pageUri);
   httpd_register_uri_handler(controlServer, &scanUri);
   httpd_register_uri_handler(controlServer, &saveUri);
+  httpd_register_uri_handler(controlServer, &setupHealthUri);
   return true;
 }
 
@@ -862,12 +875,24 @@ void maintainWiFi() {
   }
 }
 
+// Clears the replug counter once the camera has stayed powered for the whole
+// window. Runs as its own task because setup() can block on Wi-Fi for longer.
+void bootWindowTask(void *) {
+  vTaskDelay(pdMS_TO_TICKS(provisioning::RESET_WINDOW_MS));
+  provisioning::clearBootCount();
+  vTaskDelete(nullptr);
+}
+
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
   delay(800);
-  Serial.println("\n=== ESP32 SOLAR CAMERA — PHASE 5 ===");
+  Serial.println("\n=== ESP32 SOLAR CAMERA — " FIRMWARE_VERSION " ===");
+  const uint8_t boots = provisioning::registerBoot();
+  const bool forceSetup = boots >= provisioning::RESET_REPLUGS;
+  if (forceSetup) provisioning::clearBootCount();
+  xTaskCreate(bootWindowTask, "boot-window", 3072, nullptr, 1, nullptr);
 
   displayMutex = xSemaphoreCreateMutex();
   if (oled::begin()) {
@@ -879,7 +904,9 @@ void setup() {
     Serial.printf("[oled] No I2C display answered on SDA=%d SCL=%d; continuing without it\n",
                   OLED_SDA_PIN, OLED_SCL_PIN);
   }
-  setDisplay(DisplayState::Booting, "STARTING", "CAMERA INIT");
+  // One replug short of setup mode: say so, so the operator knows it counted.
+  setDisplay(DisplayState::Booting, "STARTING",
+             boots == provisioning::RESET_REPLUGS - 1 ? "REPLUG FOR SETUP" : "CAMERA INIT");
   renderDisplay();
 
   if (!initializeCamera()) {
@@ -892,9 +919,10 @@ void setup() {
   setDisplay(DisplayState::WifiConnecting, "WIFI", "CONNECTING");
   renderDisplay();
 
-  if (!connectWiFi()) {
-    // No usable network: raise the setup access point instead of sitting on a
-    // dead retry loop that an operator has no way to act on.
+  if (forceSetup) Serial.println("[wifi] Replug sequence detected; opening setup");
+  if (forceSetup || !connectWiFi()) {
+    // No usable network, or the operator asked for setup: raise the access
+    // point instead of sitting on a retry loop nobody can act on.
     runMode = RunMode::Setup;
     if (!startSetupPortal()) {
       setDisplay(DisplayState::Failed, "SETUP FAIL", "RESTART BOARD");

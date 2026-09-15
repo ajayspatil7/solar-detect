@@ -153,6 +153,73 @@ def find_camera(host_ip: str, remembered: str = "") -> str | None:
     return None
 
 
+# ------------------------------------------------------- follow the laptop --
+def follow_laptop_wifi() -> str | None:
+    """Put the camera on whatever Wi-Fi this laptop is using. Windows only."""
+    if sys.platform != "win32":
+        return None
+    import wifi_windows as wifi
+
+    connection = wifi.current_connection()
+    if connection is None:
+        fail("This laptop is not connected to Wi-Fi. Connect it to the network you "
+             "want the camera on, then start again.")
+        return None
+
+    banner("CONNECT THE CAMERA TO THIS WI-FI")
+    print(f"  This laptop is on : {connection.ssid}")
+    if connection.is_enterprise:
+        fail("This network asks for a username as well as a password (company or "
+             "university Wi-Fi). The camera cannot join that kind of network. Use a "
+             "phone hotspot instead.")
+        return None
+    if connection.is_5ghz:
+        print("\n  Note: the laptop is using this network's 5 GHz band. The camera can")
+        print("  only use 2.4 GHz. Most home routers offer both under one name, so it")
+        print("  will usually still work. A 5 GHz-only network will not.")
+
+    print("\n  Waiting for the camera's setup network (up to 45 seconds)...")
+    print("  If the camera screen does not show SETUP, unplug and replug the camera")
+    print("  three times quickly, about two seconds each time.")
+    if not wifi.setup_network_visible(45):
+        fail("The camera's SOLAR-SETUP network did not appear. Check the camera has "
+             "power, do the three quick replugs, then start again.")
+        return None
+
+    password = "" if connection.is_open else wifi.saved_password(connection.profile)
+    if password is None:
+        print(f"\n  Windows did not share the saved password for '{connection.ssid}'.")
+        print("  Type it below so the camera can join. It is sent only to the camera,")
+        print("  and nothing appears on screen while you type.")
+        try:
+            password = getpass("  Wi-Fi password: ")
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+    print(f"\n  This laptop will leave '{connection.ssid}' for about 20 seconds.")
+    try:
+        input("  Press Enter to continue, or close this window to cancel. ")
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+    if not wifi.hand_over(connection, password):
+        fail("The camera did not receive the network details. Start again, or use a "
+             "phone to join SOLAR-SETUP and open http://192.168.4.1")
+        return None
+
+    print("\n  Camera is restarting onto this network. Looking for it (up to 60 seconds)...")
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        host_ip = lan_address()
+        camera = find_camera(host_ip) if host_ip else None
+        if camera:
+            return camera
+        time.sleep(4)
+    fail(f"The camera did not appear on '{connection.ssid}'. If its screen shows SETUP "
+         "again, the password was probably wrong. Start again and re-enter it.")
+    return None
+
+
 def wait_for_backend(seconds: float = 25.0) -> bool:
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -200,6 +267,9 @@ def main() -> int:
 
     print("  Looking for the camera on your Wi-Fi...")
     camera = find_camera(host_ip, read_env().get("CAMERA_IP", ""))
+    if not camera:
+        camera = follow_laptop_wifi()
+        host_ip = lan_address() or host_ip  # the address can change after reconnecting
     if camera:
         settings = read_env()
         if settings.get("CAMERA_IP") != camera:
@@ -221,8 +291,9 @@ def main() -> int:
         print("    - the camera has power (its small screen is lit)")
         print("    - its screen shows READY, not SETUP or NO WIFI")
         print("    - it is on the SAME Wi-Fi as this computer")
-        print("\n  If the screen shows SETUP, connect a phone to the 'SOLAR-SETUP'")
-        print("  network and open http://192.168.4.1 to choose your Wi-Fi.")
+        print("\n  To move the camera to this network by hand: unplug and replug it")
+        print("  three times quickly until its screen shows SETUP, join 'SOLAR-SETUP'")
+        print("  from a phone, and open http://192.168.4.1")
         print(f"\n  Once the camera screen shows an address, open it in a browser")
         print(f"  and set the backend to: {backend_url}")
 

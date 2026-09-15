@@ -20,6 +20,14 @@ constexpr char NAMESPACE[] = "solarcam";
 constexpr char AP_SSID[] = "SOLAR-SETUP";
 constexpr char AP_PASSWORD[] = "";  // open network; nothing sensitive is served
 constexpr uint32_t CONNECT_TIMEOUT_MS = 20000;
+constexpr char AP_ADDRESS[] = "192.168.4.1";
+
+// Unplugging and replugging the camera this many times, each within the window
+// below, forces setup mode. It is the only way to re-provision a camera that is
+// still happily connected to an old network that remains in range, and it needs
+// no buttons, wires or serial cable.
+constexpr uint8_t RESET_REPLUGS = 3;
+constexpr uint32_t RESET_WINDOW_MS = 8000;
 
 struct Credentials {
   String ssid;
@@ -53,6 +61,22 @@ inline bool save(const String &ssid, const String &password) {
 
 // Forgets the network but keeps the board under operator control, so the next
 // boot goes to the setup portal rather than back to the build-time fallback.
+inline uint8_t registerBoot() {
+  Preferences prefs;
+  if (!prefs.begin(NAMESPACE, false)) return 0;
+  const uint8_t boots = prefs.getUChar("boots", 0) + 1;
+  prefs.putUChar("boots", boots);
+  prefs.end();
+  return boots;
+}
+
+inline void clearBootCount() {
+  Preferences prefs;
+  if (!prefs.begin(NAMESPACE, false)) return;
+  prefs.putUChar("boots", 0);
+  prefs.end();
+}
+
 inline void clear() {
   Preferences prefs;
   if (!prefs.begin(NAMESPACE, false)) return;
@@ -116,14 +140,15 @@ button:disabled{opacity:.55;cursor:wait}
 small{color:#74747b;font-size:.82rem}
 </style></head><body><main>
 <h1>Connect the camera to Wi-Fi</h1>
-<p class="sub">Turn the phone hotspot on first, then enter its password below.
-The camera restarts and joins automatically. Only needed once per location.</p>
+<p class="sub">Choose the same Wi-Fi your laptop uses and enter its password. The
+camera restarts and joins it. The Solar Inspector launcher on the laptop can do
+this for you automatically.</p>
 
 <label for="ssid">Network</label>
 <select id="ssid"><option value="">Scanning…</option></select>
 
 <label for="manual">Or type the name yourself</label>
-<input id="manual" value="Krutika’s iPhone 14" placeholder="Network name" autocomplete="off">
+<input id="manual" placeholder="Network name" autocomplete="off">
 
 <label for="pass">Password</label>
 <input id="pass" type="password" placeholder="Wi-Fi password" autocomplete="off">
@@ -134,11 +159,6 @@ The camera restarts and joins automatically. Only needed once per location.</p>
 </main><script>
 const $=id=>document.getElementById(id);
 function note(text,kind){const m=$('msg');m.textContent=text;m.className=kind}
-// The demo always runs on one hotspot. If the scan sees it, select the exact
-// scanned name -- iOS device names use a typographic apostrophe, so a hand-typed
-// ASCII one would silently fail to match.
-const TARGET='Krutika’s iPhone 14';
-const norm=s=>s.replace(/[\u2018\u2019\u02bc']/g,"'").toLowerCase().trim();
 async function scan(){
   try{
     const r=await fetch('/scan');const nets=await r.json();
@@ -146,9 +166,6 @@ async function scan(){
     if(!nets.length){sel.innerHTML='<option value="">No networks found</option>';return}
     nets.forEach(n=>{const o=document.createElement('option');
       o.value=n.ssid;o.textContent=`${n.ssid}  (${n.rssi} dBm)`;sel.appendChild(o)});
-    const match=nets.find(n=>norm(n.ssid)===norm(TARGET));
-    if(match){sel.value=match.ssid;$('manual').value='';
-      note('Found '+match.ssid+'. Just enter the password below.','ok')}
   }catch(e){note('Could not scan for networks. Reload the page.','bad')}
 }
 $('save').addEventListener('click',async()=>{
