@@ -890,6 +890,47 @@ Security note: the home Wi-Fi password now lives in the camera's NVS, which is
 not encrypted. Send `WIFI_FORGET` (or remove it) before the device returns to
 the client.
 
+### 6.6 SD record store — built and verified on hardware 2026-09-15
+
+Firmware `3.3.0-phase6`, 1,169,982 bytes (37%), 19% RAM, no warnings.
+
+- `records.h`: `/records/index.jsonl` with fixed 192-byte lines (record N at
+  offset (N-1)*192, so listing and deleting are seeks, not scans), per-record
+  folders holding `image.jpg`, `thumb.jpg`, `result.json`, and `store.txt`
+  with a random per-card id. Ids are never reused; deletion marks the line.
+- Only analysed inspections become records. `/capture` keeps the latest
+  frame in PSRAM and returns `X-Capture-Id`; `POST /records` sends only the
+  result JSON plus a thumbnail, and the camera writes its held copy of the
+  image. Retakes leave nothing behind, and the full image never crosses Wi-Fi
+  twice. One record per capture.
+- Endpoints: `GET /records?before=&limit=`, `POST /records`,
+  `GET /records/<id>/{image.jpg,thumb.jpg,result.json}` with ETag and 304
+  revalidation, `DELETE /records/<id>`, and an `OPTIONS` preflight.
+- Cross-origin access is echoed only for loopback and private-network
+  origins (10/8, 172.16/12, 192.168/16, localhost), matching the backend.
+- Timestamps from NTP; the dashboard's clock is the fallback.
+- **OLED SCL moved from IO14 to IO3 (U0R).** The green wire now goes to the
+  right header, pin 6. With no display attached the firmware returns IO3 to
+  the UART, so USB `WIFI_ADD`/`WIFI_LIST` still work while stacked — verified.
+- `/health` gains `sd.present`, `free_mb`, `records`, `store`. The READY
+  screen reads `NO SD - NOT SAVING` when no card is mounted.
+
+**Hardware test** (`tools/test_records_device.py`, mock analysis): record
+saved in 1.88 s, stored image byte-identical to the capture (100,955 B),
+thumbnail and result intact, index fields correct, NTP timestamp recorded,
+duplicate save refused with 409, unchanged image revalidated with 304,
+deletion removed files and restored the count. OLED detected at `0x3c` on
+the new pin; SD reported 60,871 MB free.
+
+**Bug found by that test:** esp_http_server allows 8 response headers by
+default and silently drops the rest. `/capture` already set 9, so the CORS
+headers never arrived and the dashboard could not read `X-Capture-Id`. Fixed
+with `max_resp_headers = 20`; compiled but **not yet flashed** — it is batched
+with any firmware changes the dashboard build needs, to save a rewiring cycle.
+
+DHCP moved the camera from 192.168.1.19 to .20 after rewiring; its address is
+on the OLED footer.
+
 ## Future phases
 
 - **Phase 4:** Replace/revoke the exposed no-credit test key, run a curated real

@@ -5,12 +5,15 @@
 // Supports SSD1306 and SH1106 controllers at 128x64 or 128x32. It is written
 // directly against Wire so the sketch keeps its no-external-library build.
 //
-// Wiring on the AI-Thinker ESP32-CAM (no microSD fitted, so the SD-mux pins are
-// free). GPIO 13 and 14 are used because neither is a boot strapping pin:
+// Wiring on the AI-Thinker ESP32-CAM with a microSD card in 1-bit mode. The
+// card owns GPIO 2, 14 and 15, so SCL uses GPIO 3 (U0RXD): serial input is
+// unused at runtime, boot logging on GPIO 1 is unaffected, and the firmware
+// hands GPIO 3 back to the UART when no display is attached, as when the
+// camera is stacked on the programmer.
 //   OLED VCC -> 3V3      OLED GND -> GND
-//   OLED SDA -> GPIO 13  OLED SCL -> GPIO 14
-// Avoid GPIO 12 (MTDI strapping sets flash voltage), GPIO 16 (PSRAM), and
-// GPIO 1/3 (UART upload and Serial Monitor).
+//   OLED SDA -> GPIO 13  OLED SCL -> GPIO 3 (U0R)
+// Avoid GPIO 12 (MTDI strapping sets flash voltage), GPIO 16 (PSRAM),
+// GPIO 4 (flash LED) and GPIO 14 (SD clock).
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -21,7 +24,7 @@
 #define OLED_SDA_PIN 13
 #endif
 #ifndef OLED_SCL_PIN
-#define OLED_SCL_PIN 14
+#define OLED_SCL_PIN 3
 #endif
 #ifndef OLED_HEIGHT
 #define OLED_HEIGHT 64  // Set to 32 for a 128x32 module.

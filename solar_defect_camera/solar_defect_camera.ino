@@ -9,6 +9,7 @@
 #include "web_ui_gzip.h"
 #include "oled.h"
 #include "provisioning.h"
+#include "records.h"
 
 // Confirmed AI-Thinker ESP32-CAM / OV2640 pin map.
 #define PWDN_GPIO_NUM 32
@@ -32,7 +33,7 @@ namespace {
 
 constexpr uint16_t CONTROL_PORT = 80;
 constexpr uint16_t STREAM_PORT = 81;
-#define FIRMWARE_VERSION "3.2.0-phase6"
+#define FIRMWARE_VERSION "3.3.0-phase6"
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 10000;
 constexpr uint32_t STREAM_LOG_INTERVAL_FRAMES = 30;
@@ -49,6 +50,14 @@ RunMode runMode = RunMode::Normal;
 httpd_handle_t controlServer = nullptr;
 httpd_handle_t streamServer = nullptr;
 SemaphoreHandle_t cameraMutex = nullptr;
+
+// The most recent capture, kept in PSRAM so the dashboard can save it as a
+// record after analysis without sending the full image back over Wi-Fi.
+uint8_t *heldImage = nullptr;
+size_t heldImageCapacity = 0;
+size_t heldImageLen = 0;
+uint32_t heldCaptureId = 0;
+uint32_t captureCounter = 0;
 
 volatile uint32_t lastCaptureMs = 0;
 volatile uint32_t lastTransferMs = 0;
@@ -209,10 +218,41 @@ const char *headlineForStatus(const char *status) {
   return "RESULT";
 }
 
+// The dashboard is served from the laptop, so it reaches the camera
+// cross-origin. Only loopback and private-network origins are echoed back,
+// matching the backend's policy, so an arbitrary website cannot drive it.
+bool allowedOrigin(const char *origin) {
+  for (const char *prefix : {"http://localhost", "http://127.0.0.1", "http://192.168.", "http://10."}) {
+    if (strncmp(origin, prefix, strlen(prefix)) == 0) return true;
+  }
+  if (strncmp(origin, "http://172.", 11) == 0) {
+    const int second = atoi(origin + 11);
+    return second >= 16 && second <= 31;
+  }
+  return false;
+}
+
+void setCorsHeaders(httpd_req_t *request) {
+  // esp_http_server keeps header pointers until the response is sent. Control
+  // handlers run one at a time on the server's single task, so one buffer is
+  // safe; the stream server sets its own header and never calls this.
+  static char origin[96];
+  origin[0] = '\0';
+  if (httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin)) != ESP_OK ||
+      !allowedOrigin(origin)) {
+    return;
+  }
+  httpd_resp_set_hdr(request, "Access-Control-Allow-Origin", origin);
+  httpd_resp_set_hdr(request, "Vary", "Origin");
+  httpd_resp_set_hdr(request, "Access-Control-Expose-Headers",
+                     "X-Capture-Id, X-Image-Width, X-Image-Height, X-JPEG-Bytes, X-Capture-Time-Ms, X-Record-Id");
+}
+
 void setNoCacheHeaders(httpd_req_t *request) {
   httpd_resp_set_hdr(request, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   httpd_resp_set_hdr(request, "Pragma", "no-cache");
   httpd_resp_set_hdr(request, "Expires", "0");
+  if (request->handle != streamServer) setCorsHeaders(request);
 }
 
 void optimizeSocketForLowLatency(httpd_req_t *request) {
@@ -232,7 +272,7 @@ esp_err_t indexHandler(httpd_req_t *request) {
 }
 
 esp_err_t healthHandler(httpd_req_t *request) {
-  char json[640];
+  char json[900];
   const bool cameraReady = esp_camera_sensor_get() != nullptr;
   const String ip = WiFi.localIP().toString();
   const int length = snprintf(
@@ -244,6 +284,7 @@ esp_err_t healthHandler(httpd_req_t *request) {
       "\"capture_width\":%u,\"capture_height\":%u,"
       "\"oled\":{\"present\":%s,\"address\":\"0x%02x\",\"controller\":\"%s\","
       "\"width\":%u,\"height\":%u},"
+      "\"sd\":{\"present\":%s,\"free_mb\":%lu,\"records\":%lu,\"store\":\"%s\"},"
       "\"uptime_ms\":%lu,\"mode\":\"normal\",\"firmware\":\"" FIRMWARE_VERSION "\"}",
       cameraReady ? "true" : "false",
       WiFi.status() == WL_CONNECTED ? "true" : "false", ip.c_str(), WiFi.RSSI(),
@@ -257,6 +298,9 @@ esp_err_t healthHandler(httpd_req_t *request) {
       static_cast<unsigned>(CAPTURE_HEIGHT),
       oled::present ? "true" : "false", oled::address, oled::CONTROLLER_NAME,
       static_cast<unsigned>(oled::WIDTH), static_cast<unsigned>(oled::HEIGHT),
+      records::mounted ? "true" : "false",
+      static_cast<unsigned long>(records::freeBytes / 1048576ULL),
+      static_cast<unsigned long>(records::liveCount), records::storeId,
       static_cast<unsigned long>(millis()));
 
   if (length < 0 || static_cast<size_t>(length) >= sizeof(json)) {
@@ -349,7 +393,7 @@ esp_err_t statusHandler(httpd_req_t *request) {
   }
 
   if (strcmp(state, "ready") == 0) {
-    setDisplay(DisplayState::Ready, "READY", "AWAITING CAPTURE");
+    setDisplay(DisplayState::Ready, "READY", records::mounted ? "AWAITING CAPTURE" : "NO SD - NOT SAVING");
   } else if (strcmp(state, "capturing") == 0) {
     setDisplay(DisplayState::Capturing, "CAPTURING", "UXGA STILL");
   } else if (strcmp(state, "analyzing") == 0) {
@@ -426,6 +470,20 @@ esp_err_t captureHandler(httpd_req_t *request) {
     return httpd_resp_sendstr(request, "Camera capture failed");
   }
 
+  char captureIdHeader[12] = "0";
+  if (frame->len > heldImageCapacity) {
+    free(heldImage);
+    heldImage = static_cast<uint8_t *>(ps_malloc(frame->len + 32768));
+    heldImageCapacity = heldImage ? frame->len + 32768 : 0;
+  }
+  if (heldImage != nullptr) {
+    memcpy(heldImage, frame->buf, frame->len);
+    heldImageLen = frame->len;
+    heldCaptureId = ++captureCounter;
+    snprintf(captureIdHeader, sizeof(captureIdHeader), "%lu", static_cast<unsigned long>(heldCaptureId));
+  }
+  httpd_resp_set_hdr(request, "X-Capture-Id", captureIdHeader);
+
   // esp_http_server retains these pointers until the response is sent, so each
   // header needs its own buffer for the full lifetime of this handler.
   char captureTimeHeader[24];
@@ -474,6 +532,224 @@ esp_err_t captureHandler(httpd_req_t *request) {
            static_cast<unsigned long>(captureTimeMs));
   setDisplay(DisplayState::Ready, "CAPTURED", captured);
   return result;
+}
+
+esp_err_t sendJsonError(httpd_req_t *request, const char *status, const char *code,
+                        const char *message) {
+  char body[220];
+  snprintf(body, sizeof(body), "{\"error\":{\"code\":\"%s\",\"message\":\"%s\"}}", code, message);
+  httpd_resp_set_status(request, status);
+  httpd_resp_set_type(request, "application/json");
+  setNoCacheHeaders(request);
+  return httpd_resp_sendstr(request, body);
+}
+
+esp_err_t noSdCard(httpd_req_t *request) {
+  return sendJsonError(request, "503 Service Unavailable", "no_sd_card",
+                       "No SD card is mounted in the camera. Insert one and restart it.");
+}
+
+// "/records/000124/image.jpg" -> 124 and "image.jpg"; "/records/000124" -> 124 and "".
+uint32_t parseRecordUri(const char *uri, const char **file) {
+  const char *p = uri + strlen("/records/");
+  uint32_t id = 0;
+  uint8_t digits = 0;
+  while (*p >= '0' && *p <= '9' && digits < 9) {
+    id = id * 10 + static_cast<uint32_t>(*p - '0');
+    ++p;
+    ++digits;
+  }
+  if (digits == 0) return 0;
+  if (*p == '/') {
+    *file = p + 1;
+  } else if (*p == '\0' || *p == '?') {
+    *file = "";
+  } else {
+    return 0;
+  }
+  return id;
+}
+
+esp_err_t preflightHandler(httpd_req_t *request) {
+  setCorsHeaders(request);
+  httpd_resp_set_hdr(request, "Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  httpd_resp_set_hdr(request, "Access-Control-Allow-Headers",
+                     "Content-Type, X-Capture-Id, X-Result-Length, X-Client-Time, If-None-Match");
+  httpd_resp_set_hdr(request, "Access-Control-Max-Age", "600");
+  httpd_resp_set_status(request, "204 No Content");
+  return httpd_resp_send(request, nullptr, 0);
+}
+
+esp_err_t recordsListHandler(httpd_req_t *request) {
+  if (!records::mounted) return noSdCard(request);
+  char query[64] = "";
+  char value[16];
+  uint32_t before = 0;
+  uint8_t limit = 24;
+  if (httpd_req_get_url_query_str(request, query, sizeof(query)) == ESP_OK) {
+    if (httpd_query_key_value(query, "before", value, sizeof(value)) == ESP_OK) {
+      before = strtoul(value, nullptr, 10);
+    }
+    if (httpd_query_key_value(query, "limit", value, sizeof(value)) == ESP_OK) {
+      limit = static_cast<uint8_t>(constrain(atoi(value), 1, 100));
+    }
+  }
+  const String body = records::list(before, limit);
+  httpd_resp_set_type(request, "application/json");
+  setNoCacheHeaders(request);
+  return httpd_resp_send(request, body.c_str(), body.length());
+}
+
+esp_err_t recordFileHandler(httpd_req_t *request) {
+  if (!records::mounted) return noSdCard(request);
+  struct Kind {
+    const char *name;
+    const char *type;
+  };
+  static const Kind kinds[] = {
+      {"image.jpg", "image/jpeg"}, {"thumb.jpg", "image/jpeg"}, {"result.json", "application/json"}};
+  const char *file = "";
+  const uint32_t id = parseRecordUri(request->uri, &file);
+  const Kind *kind = nullptr;
+  for (const Kind &k : kinds) {
+    const size_t n = strlen(k.name);
+    if (id && strncmp(file, k.name, n) == 0 && (file[n] == '\0' || file[n] == '?')) kind = &k;
+  }
+  if (kind == nullptr) return sendJsonError(request, "404 Not Found", "not_found", "No such record file.");
+
+  char idText[12];
+  records::idString(id, idText, sizeof(idText));
+  File source = SD_MMC.open(String(records::ROOT) + "/" + idText + "/" + kind->name, FILE_READ);
+  if (!source || source.isDirectory()) {
+    if (source) source.close();
+    return sendJsonError(request, "404 Not Found", "not_found", "No such record file.");
+  }
+
+  // Ids are never reused on a card, so a record file changes only if the card
+  // is swapped; the ETag includes the card's store id to catch exactly that.
+  char etag[40];
+  snprintf(etag, sizeof(etag), "\"%s-%s-%c\"", records::storeId, idText, kind->name[0]);
+  setCorsHeaders(request);
+  httpd_resp_set_hdr(request, "ETag", etag);
+  httpd_resp_set_hdr(request, "Cache-Control", "private, no-cache");
+  char ifNoneMatch[40];
+  if (httpd_req_get_hdr_value_str(request, "If-None-Match", ifNoneMatch, sizeof(ifNoneMatch)) == ESP_OK &&
+      strcmp(ifNoneMatch, etag) == 0) {
+    source.close();
+    httpd_resp_set_status(request, "304 Not Modified");
+    return httpd_resp_send(request, nullptr, 0);
+  }
+
+  httpd_resp_set_type(request, kind->type);
+  uint8_t *chunk = static_cast<uint8_t *>(malloc(4096));
+  if (chunk == nullptr) {
+    source.close();
+    return httpd_resp_send_500(request);
+  }
+  esp_err_t result = ESP_OK;
+  int read = 0;
+  while ((read = source.read(chunk, 4096)) > 0) {
+    result = httpd_resp_send_chunk(request, reinterpret_cast<const char *>(chunk), read);
+    if (result != ESP_OK) break;
+  }
+  free(chunk);
+  source.close();
+  if (result == ESP_OK) result = httpd_resp_send_chunk(request, nullptr, 0);
+  return result;
+}
+
+// Body: the analysis result JSON (X-Result-Length bytes) followed immediately
+// by an optional thumbnail JPEG. The full image is the capture the camera is
+// already holding, identified by X-Capture-Id.
+esp_err_t recordCreateHandler(httpd_req_t *request) {
+  if (!records::mounted) return noSdCard(request);
+  char value[32];
+  uint32_t captureId = 0;
+  size_t resultLen = 0;
+  if (httpd_req_get_hdr_value_str(request, "X-Capture-Id", value, sizeof(value)) == ESP_OK) {
+    captureId = strtoul(value, nullptr, 10);
+  }
+  if (httpd_req_get_hdr_value_str(request, "X-Result-Length", value, sizeof(value)) == ESP_OK) {
+    resultLen = strtoul(value, nullptr, 10);
+  }
+  const size_t total = request->content_len;
+  if (captureId == 0 || captureId != heldCaptureId || heldImageLen == 0) {
+    return sendJsonError(request, "409 Conflict", "capture_unavailable",
+                         "That capture is no longer held by the camera. Capture again, then save.");
+  }
+  if (resultLen > records::MAX_RESULT_BYTES || total < resultLen ||
+      total - resultLen > records::MAX_THUMB_BYTES) {
+    return sendJsonError(request, "413 Payload Too Large", "too_large", "The result or thumbnail is too large.");
+  }
+
+  uint8_t *body = total ? static_cast<uint8_t *>(ps_malloc(total + 1)) : nullptr;
+  if (total && body == nullptr) {
+    return sendJsonError(request, "500 Internal Server Error", "no_memory", "The camera is out of memory.");
+  }
+  size_t received = 0;
+  uint8_t timeouts = 0;
+  while (received < total) {
+    const int n = httpd_req_recv(request, reinterpret_cast<char *>(body) + received, total - received);
+    if (n == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 4) continue;
+    if (n <= 0) {
+      free(body);
+      return sendJsonError(request, "400 Bad Request", "incomplete_body", "The upload was interrupted.");
+    }
+    received += static_cast<size_t>(n);
+  }
+
+  records::Meta meta;
+  if (resultLen) {
+    const uint8_t following = body[resultLen];
+    body[resultLen] = '\0';  // terminate the JSON in place for field extraction
+    const char *json = reinterpret_cast<const char *>(body);
+    if (json[0] != '{') {
+      free(body);
+      return sendJsonError(request, "400 Bad Request", "invalid_result", "The result must be a JSON object.");
+    }
+    jsonStringField(json, "status", meta.status, sizeof(meta.status));
+    jsonStringField(json, "priority", meta.priority, sizeof(meta.priority));
+    uint8_t defects = 0;
+    for (const char *p = json; (p = strstr(p, "\"bounding_box\"")) != nullptr && defects < 255; p += 14) {
+      ++defects;
+    }
+    meta.defects = defects;
+    body[resultLen] = following;
+  }
+  httpd_req_get_hdr_value_str(request, "X-Client-Time", meta.clientTime, sizeof(meta.clientTime));
+
+  const uint32_t id = records::create(heldImage, heldImageLen, body, resultLen,
+                                      body ? body + resultLen : nullptr, total - resultLen, meta);
+  free(body);
+  if (id == 0) {
+    return sendJsonError(request, "507 Insufficient Storage", "save_failed",
+                         "The SD card could not save this inspection. Check the card is not full.");
+  }
+  heldCaptureId = 0;  // one record per capture
+
+  char idText[12];
+  records::idString(id, idText, sizeof(idText));
+  char response[40];
+  snprintf(response, sizeof(response), "{\"id\":\"%s\"}", idText);
+  Serial.printf("[records] Saved %s: %u KB image, %u defect(s)\n", idText,
+                static_cast<unsigned>(heldImageLen / 1024), static_cast<unsigned>(meta.defects));
+  httpd_resp_set_hdr(request, "X-Record-Id", idText);
+  httpd_resp_set_status(request, "201 Created");
+  httpd_resp_set_type(request, "application/json");
+  setNoCacheHeaders(request);
+  return httpd_resp_sendstr(request, response);
+}
+
+esp_err_t recordDeleteHandler(httpd_req_t *request) {
+  if (!records::mounted) return noSdCard(request);
+  const char *file = "";
+  const uint32_t id = parseRecordUri(request->uri, &file);
+  if (id == 0 || (*file != '\0' && *file != '?') || !records::remove(id)) {
+    return sendJsonError(request, "404 Not Found", "not_found", "No such record.");
+  }
+  httpd_resp_set_type(request, "application/json");
+  setNoCacheHeaders(request);
+  return httpd_resp_sendstr(request, "{\"deleted\":true}");
 }
 
 esp_err_t streamHandler(httpd_req_t *request) {
@@ -871,7 +1147,12 @@ bool startServers() {
   httpd_config_t controlConfig = HTTPD_DEFAULT_CONFIG();
   controlConfig.server_port = CONTROL_PORT;
   controlConfig.ctrl_port = 32768;
-  controlConfig.max_uri_handlers = 8;
+  controlConfig.max_uri_handlers = 16;
+  // The default of 8 response headers silently drops the rest. A capture
+  // already sets 9, so the cross-origin headers the dashboard depends on
+  // were being discarded without any error.
+  controlConfig.max_resp_headers = 20;
+  controlConfig.uri_match_fn = httpd_uri_match_wildcard;
   controlConfig.lru_purge_enable = true;
   controlConfig.recv_wait_timeout = 5;
   controlConfig.send_wait_timeout = 10;
@@ -887,6 +1168,16 @@ bool startServers() {
       .uri = "/status", .method = HTTP_POST, .handler = statusHandler, .user_ctx = nullptr};
   static const httpd_uri_t i2cUri = {
       .uri = "/i2c", .method = HTTP_GET, .handler = i2cHandler, .user_ctx = nullptr};
+  static const httpd_uri_t recordsListUri = {
+      .uri = "/records", .method = HTTP_GET, .handler = recordsListHandler, .user_ctx = nullptr};
+  static const httpd_uri_t recordCreateUri = {
+      .uri = "/records", .method = HTTP_POST, .handler = recordCreateHandler, .user_ctx = nullptr};
+  static const httpd_uri_t recordFileUri = {
+      .uri = "/records/*", .method = HTTP_GET, .handler = recordFileHandler, .user_ctx = nullptr};
+  static const httpd_uri_t recordDeleteUri = {
+      .uri = "/records/*", .method = HTTP_DELETE, .handler = recordDeleteHandler, .user_ctx = nullptr};
+  static const httpd_uri_t preflightUri = {
+      .uri = "/*", .method = HTTP_OPTIONS, .handler = preflightHandler, .user_ctx = nullptr};
   static const httpd_uri_t forgetUri = {
       .uri = "/forget-wifi", .method = HTTP_POST, .handler = forgetWifiHandler,
       .user_ctx = nullptr};
@@ -901,6 +1192,11 @@ bool startServers() {
   httpd_register_uri_handler(controlServer, &statusUri);
   httpd_register_uri_handler(controlServer, &i2cUri);
   httpd_register_uri_handler(controlServer, &forgetUri);
+  httpd_register_uri_handler(controlServer, &recordsListUri);
+  httpd_register_uri_handler(controlServer, &recordCreateUri);
+  httpd_register_uri_handler(controlServer, &recordFileUri);
+  httpd_register_uri_handler(controlServer, &recordDeleteUri);
+  httpd_register_uri_handler(controlServer, &preflightUri);
 
   httpd_config_t streamConfig = HTTPD_DEFAULT_CONFIG();
   streamConfig.server_port = STREAM_PORT;
@@ -931,7 +1227,7 @@ void maintainWiFi() {
     if (status == WL_CONNECTED) {
       Serial.printf("[wifi] Reconnected: http://%s  RSSI=%d dBm\n",
                     WiFi.localIP().toString().c_str(), WiFi.RSSI());
-      setDisplay(DisplayState::Ready, "READY", "AWAITING CAPTURE");
+      setDisplay(DisplayState::Ready, "READY", records::mounted ? "AWAITING CAPTURE" : "NO SD - NOT SAVING");
     } else {
       Serial.printf("[wifi] Disconnected (status=%d)\n", status);
       setDisplay(DisplayState::WifiFail, "WIFI LOST", "RECONNECTING");
@@ -960,6 +1256,8 @@ void setup() {
   Serial.begin(115200);
   delay(800);
   Serial.println("\n=== ESP32 SOLAR CAMERA — " FIRMWARE_VERSION " ===");
+  pinMode(4, OUTPUT);  // flash LED; keep it dark
+  digitalWrite(4, LOW);
   const uint8_t boots = provisioning::registerBoot();
   const bool forceSetup = boots >= provisioning::RESET_REPLUGS;
   if (forceSetup) provisioning::clearBootCount();
@@ -974,6 +1272,12 @@ void setup() {
   } else {
     Serial.printf("[oled] No I2C display answered on SDA=%d SCL=%d; continuing without it\n",
                   OLED_SDA_PIN, OLED_SCL_PIN);
+    // SCL shares GPIO 3 with the UART receiver. With no display attached --
+    // the camera is stacked on the programmer -- hand the pin back so USB
+    // commands such as WIFI_ADD keep working.
+    Wire.end();
+    Serial.end();
+    Serial.begin(115200);
   }
   // One replug short of setup mode: say so, so the operator knows it counted.
   setDisplay(DisplayState::Booting, "STARTING",
@@ -1004,6 +1308,14 @@ void setup() {
     return;
   }
 
+  if (records::begin()) {
+    Serial.printf("[records] SD card mounted: %lu inspection(s), %lu MB free, store %s\n",
+                  static_cast<unsigned long>(records::liveCount),
+                  static_cast<unsigned long>(records::freeBytes / 1048576ULL), records::storeId);
+  } else {
+    Serial.println("[records] No SD card; inspections will not be saved");
+  }
+
   setDisplay(DisplayState::WifiConnecting, "WIFI", "CONNECTING");
   renderDisplay();
 
@@ -1026,6 +1338,10 @@ void setup() {
     return;
   }
 
+  // Record timestamps come from NTP when the network has internet access; the
+  // dashboard supplies its own clock as a fallback.
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+
   if (!startServers()) {
     Serial.println("[fatal] Web server startup failed");
     setDisplay(DisplayState::Failed, "HTTP FAIL", "RESTART BOARD");
@@ -1033,7 +1349,7 @@ void setup() {
     return;
   }
 
-  setDisplay(DisplayState::Ready, "READY", "AWAITING CAPTURE");
+  setDisplay(DisplayState::Ready, "READY", records::mounted ? "AWAITING CAPTURE" : "NO SD - NOT SAVING");
   renderDisplay();
 
   Serial.println("SERIAL_READY");
