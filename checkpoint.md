@@ -766,6 +766,48 @@ the figure was not assumed here.
 now includes usage so budget exhaustion is diagnosable rather than generic.
 Backend suite still passes, 5 tests.
 
+## Phase 6 — planned 2026-09-15: client requirements after handover
+
+The client returned the device with three requirements. Build order follows
+data dependency: root cause defines a record, storage keeps it, the dashboard
+shows it.
+
+### 6.1 Root cause analysis — decided: image only, hybrid design
+
+- Per defect, the model selects a cause from a **fixed enum** and states the
+  visual evidence; it cannot invent a cause.
+- The backend enriches each cause from a curated, reviewable knowledge file:
+  explanation, how to confirm, recommended action, urgency.
+- Same API call — no added latency, a few extra output tokens.
+- Defect taxonomy gains `snail_trail` and `delamination`.
+- Always framed as *probable* cause with a verification step (EL, IR
+  thermography, I-V curve), never as a confirmed diagnosis.
+- Operator context (panel age, cleaning, weather) was considered and declined.
+
+### 6.2 Storage — decided: microSD on the ESP32
+
+- Internal flash was rejected: the largest filesystem partition is 2 MB
+  (`no_ota`), about 25 inspections at 48–95 KB per image, with wear.
+- **Pin conflict:** the board is `BOARD_HAS_1BIT_SDMMC`; 1-bit SD uses IO2
+  (D0), IO14 (CLK) and IO15 (CMD). OLED SCL is currently IO14. SCL moves to
+  **IO3** (U0RXD): serial input is unused at runtime, boot logging on IO1 is
+  unaffected, and flashing already requires unwiring the camera. IO12
+  (strapping) and IO4 (flash LED) were rejected.
+- File-based record store rather than an SQL engine:
+  `/records/index.jsonl`, `/records/<id>/image.jpg`, `thumb.jpg`, `result.json`.
+- Image saved at capture; result attached afterwards. Thumbnail generated in
+  the browser. Timestamps via NTP, as the board has no RTC.
+- Card: microSDHC 4–32 GB, FAT32. Larger SDXC cards ship as exFAT.
+
+### 6.3 Dashboard — decided: laptop-hosted, mockup first
+
+- Served by the backend at `localhost:8000`, same origin as analysis, which
+  removes the backend-address failure mode entirely. The ESP32 keeps a minimal
+  fallback page. ESP32 endpoints need CORS headers.
+- Three screens: Inspect, History, Record detail with printable report.
+  Diagnostics behind a single status indicator.
+- A clickable mockup is to be approved before implementation.
+
 ## Future phases
 
 - **Phase 4:** Replace/revoke the exposed no-credit test key, run a curated real
