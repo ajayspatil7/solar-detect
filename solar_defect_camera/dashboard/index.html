@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Solar Inspector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true"><rect x="1" y="1" width="24" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 1v18M17 1v18M1 10h24" stroke="currentColor" stroke-width="1.5"/></svg>
+    Solar Inspector
+  </div>
+  <div class="spacer"></div>
+  <details class="status" id="status">
+    <summary><span class="dot" id="status-dot" aria-hidden="true"></span><span class="label" id="status-label">Checking camera…</span></summary>
+    <div class="status-panel">
+      <dl id="status-list"></dl>
+      <button class="btn btn-small" id="find-camera" type="button" hidden>Find camera</button>
+    </div>
+  </details>
+</header>
+
+<div class="shell">
+  <nav class="rail" aria-label="Main">
+    <button class="nav" id="nav-inspect" type="button" data-route="#/inspect" aria-current="page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3.2"/></svg>
+      Inspect
+    </button>
+    <button class="nav" id="nav-history" type="button" data-route="#/history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="4.5" width="6" height="4.5" rx="1"/><rect x="3.5" y="14.5" width="6" height="4.5" rx="1"/><path d="M13 6h8M13 8.5h5M13 16h8M13 18.5h5"/></svg>
+      History
+    </button>
+  </nav>
+
+  <main>
+    <section class="view" id="view-inspect" aria-labelledby="h-inspect">
+      <div class="view-head"><h1 id="h-inspect">Inspect</h1><span class="sub">Point the camera at one module, then capture.</span></div>
+      <div class="inspect">
+        <div class="stage-col">
+          <div class="stage" id="stage-inspect">
+            <img class="frame" id="live" alt="Live view from the camera">
+            <img class="frame" id="still-inspect" alt="Captured image of the solar module" hidden>
+            <svg id="boxes-inspect" viewBox="0 0 1600 1200" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+            <div class="stage-message" id="offline" hidden>
+              <strong>Camera not found</strong>
+              <span id="offline-text">Check the camera has power and its screen shows READY.</span>
+              <button class="btn btn-small" id="offline-find" type="button">Find camera</button>
+            </div>
+            <span class="stage-progress" id="progress" hidden><span class="spinner" aria-hidden="true"></span><span id="progress-text"></span></span>
+            <span class="stage-badge" id="badge-inspect">Live view</span>
+          </div>
+          <div class="toolbar">
+            <button class="btn btn-primary" id="capture" type="button">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
+              <span id="capture-label">Capture and analyze</span>
+            </button>
+            <button class="btn" id="back-live" type="button" hidden>Live view</button>
+            <label class="toggle"><input type="checkbox" id="regions-inspect" checked> Show regions</label>
+            <span class="meta mono" id="meta-inspect"></span>
+          </div>
+        </div>
+        <div class="findings" id="findings-inspect" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-history" aria-labelledby="h-history" hidden>
+      <div class="view-head"><h1 id="h-history">History</h1><span class="sub" id="history-count"></span></div>
+      <div class="filters" role="group" aria-label="Filter by priority" id="filters"></div>
+      <div class="table">
+        <div class="thead" aria-hidden="true"><span>Image</span><span>Inspection</span><span>Result</span><span>Regions</span><span>Priority</span></div>
+        <div id="rows"></div>
+        <div class="more" id="more-wrap" hidden><button class="btn" id="more" type="button">Load older inspections</button></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-record" aria-labelledby="h-record" hidden>
+      <button class="back" id="back" type="button">← All inspections</button>
+      <div class="view-head"><h1 id="h-record">Inspection</h1><span class="sub" id="record-when"></span></div>
+      <div class="inspect">
+        <div class="stage-col">
+          <div class="stage" id="stage-record">
+            <img class="frame" id="still-record" alt="Stored image of the solar module">
+            <svg id="boxes-record" viewBox="0 0 1600 1200" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+            <span class="stage-progress" id="record-loading" hidden><span class="spinner" aria-hidden="true"></span>Loading image from the camera…</span>
+            <span class="stage-badge">Stored on camera</span>
+          </div>
+          <div class="toolbar">
+            <button class="btn" id="print" type="button">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M7 9V3h10v6M7 18H4v-7h16v7h-3"/><rect x="7" y="14" width="10" height="7"/></svg>
+              Print report
+            </button>
+            <label class="toggle"><input type="checkbox" id="regions-record" checked> Show regions</label>
+            <span class="meta mono" id="meta-record"></span>
+          </div>
+          <button class="danger" id="delete" type="button">Delete this inspection</button>
+        </div>
+        <div class="findings" id="findings-record"></div>
+      </div>
+    </section>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

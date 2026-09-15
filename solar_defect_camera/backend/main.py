@@ -5,22 +5,28 @@ import asyncio
 import io
 import json
 import os
+import re
 import time
 import uuid
+from collections import OrderedDict
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
 import openai
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
+from backend import camera
 
-SERVICE_VERSION = "3.2.0-phase6"
+
+SERVICE_VERSION = "3.3.0-phase6"
 EXPECTED_WIDTH = 1600
 EXPECTED_HEIGHT = 1200
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
@@ -417,6 +423,72 @@ def analyze_with_openai(
     return response.output_parsed, usage
 
 
+MODE_LABELS = {"openai": "Vision model", "mock": "Demo mode"}
+
+
+def analysis_mode() -> str:
+    return os.getenv("ANALYSIS_MODE", "openai").strip().lower()
+
+
+class AnalysisError(Exception):
+    def __init__(self, status: int, code: str, message: str, retryable: bool):
+        super().__init__(message)
+        self.status, self.code, self.message, self.retryable = status, code, message, retryable
+
+    def as_dict(self) -> dict:
+        return {"code": self.code, "message": self.message, "retryable": self.retryable}
+
+
+def analyze_image(image_bytes: bytes) -> dict:
+    """Validate, analyse and serialise one capture. Shared by POST /analyze and
+    the dashboard's inspection flow; raises AnalysisError with a safe message."""
+    try:
+        width, height = validate_jpeg(image_bytes)
+    except ValueError as exc:
+        raise AnalysisError(400, "invalid_image", str(exc), False) from exc
+
+    mode = analysis_mode()
+    model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
+    started = time.perf_counter()
+    usage = None
+    try:
+        if mode == "mock":
+            inspection = mock_inspection()
+        elif mode == "openai":
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
+            if not api_key:
+                raise AnalysisError(503, "backend_not_configured",
+                                    "The analysis service has no API key configured.", False)
+            inspection, usage = analyze_with_openai(image_bytes, model, api_key)
+        else:
+            raise AnalysisError(503, "invalid_backend_mode", "The analysis mode is not recognised.", False)
+    except openai.AuthenticationError as exc:
+        raise AnalysisError(401, "authentication_error", "The vision model rejected the API key.", False) from exc
+    except openai.RateLimitError as exc:
+        api_code = getattr(getattr(exc, "body", None), "get", lambda *_: None)("code")
+        if api_code == "insufficient_quota" or "quota" in str(exc).lower():
+            raise AnalysisError(402, "quota_exceeded", "The vision model account has no credit left.", False) from exc
+        raise AnalysisError(429, "rate_limited", "The vision model is busy. Try again shortly.", True) from exc
+    except openai.APITimeoutError as exc:
+        raise AnalysisError(504, "upstream_timeout", "The vision model took too long to respond.", True) from exc
+    except openai.APIConnectionError as exc:
+        raise AnalysisError(503, "upstream_unavailable",
+                            "The vision model could not be reached. Check this computer's internet connection.",
+                            True) from exc
+    except openai.BadRequestError as exc:
+        raise AnalysisError(502, "upstream_request_rejected", "The vision model rejected the image.", False) from exc
+    except (ValueError, TypeError) as exc:
+        raise AnalysisError(502, "invalid_model_response", "The analysis result could not be validated.", True) from exc
+
+    result = serialize_result(
+        inspection, width=width, height=height, mode=mode,
+        model=model if mode == "openai" else "deterministic-mock",
+        latency_ms=round((time.perf_counter() - started) * 1000), usage=usage,
+    )
+    result["meta"]["mode_label"] = MODE_LABELS.get(mode, mode)
+    return result
+
+
 app = FastAPI(
     title="Solar Inspector Local API",
     version=SERVICE_VERSION,
@@ -443,19 +515,21 @@ analysis_lock = asyncio.Lock()
 @app.middleware("http")
 async def privacy_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers["Cache-Control"] = "no-store"
+    # Default to no-store; record images set their own revalidation policy.
+    response.headers.setdefault("Cache-Control", "no-store")
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 
 @app.get("/health")
 def health() -> dict:
-    mode = os.getenv("ANALYSIS_MODE", "openai").strip().lower()
+    mode = analysis_mode()
     return {
         "ok": mode == "mock" or bool(os.getenv("OPENAI_API_KEY")),
         "service": "solar-inspector-backend",
         "version": SERVICE_VERSION,
         "mode": mode,
+        "mode_label": MODE_LABELS.get(mode, mode),
         "model": os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
         "key_configured": bool(os.getenv("OPENAI_API_KEY")),
         "expected_capture": {"width": EXPECTED_WIDTH, "height": EXPECTED_HEIGHT},
@@ -467,63 +541,198 @@ async def analyze(request: Request):
     content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
     if content_type != "image/jpeg":
         return error_response(415, "unsupported_media_type", "Upload a JPEG image.", False)
-
     image_bytes = await request.body()
     try:
-        width, height = validate_jpeg(image_bytes)
-    except ValueError as exc:
-        return error_response(400, "invalid_image", str(exc), False)
+        async with analysis_lock:
+            return await run_in_threadpool(analyze_image, image_bytes)
+    except AnalysisError as exc:
+        return error_response(exc.status, exc.code, exc.message, exc.retryable)
 
-    mode = os.getenv("ANALYSIS_MODE", "openai").strip().lower()
-    model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
-    started = time.perf_counter()
+
+# ---------------------------------------------------------------------------
+# Dashboard API. The browser talks only to this service; this service talks to
+# the camera. Only the live MJPEG stream is loaded straight from the camera.
+# ---------------------------------------------------------------------------
+
+THUMBNAIL_SIZE = (320, 240)
+RECORD_ID = re.compile(r"^\d{1,9}$")
+_recent_captures: "OrderedDict[str, bytes]" = OrderedDict()  # memory only, never disk
+
+
+def camera_error_response(exc: camera.CameraError) -> JSONResponse:
+    return error_response(exc.status, exc.code, exc.message, exc.status in (502, 503, 504))
+
+
+def make_thumbnail(image_bytes: bytes) -> bytes:
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        preview = image.convert("RGB")
+        preview.thumbnail(THUMBNAIL_SIZE)
+        out = io.BytesIO()
+        preview.save(out, "JPEG", quality=78, optimize=True)
+        return out.getvalue()
+
+
+def remember_capture(image_bytes: bytes) -> str:
+    token = uuid.uuid4().hex[:12]
+    _recent_captures[token] = image_bytes
+    while len(_recent_captures) > 3:
+        _recent_captures.popitem(last=False)
+    return token
+
+
+def top_severity(defects: list[dict]) -> str:
+    order = {"low": 0, "medium": 1, "high": 2}
+    return max((d["severity"] for d in defects), key=order.get, default="")
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@app.get("/api/status")
+async def api_status(search: bool = False):
+    mode = analysis_mode()
+    status = {
+        "analysis": {
+            "ready": mode == "mock" or bool(os.getenv("OPENAI_API_KEY")),
+            "mode": mode,
+            "label": MODE_LABELS.get(mode, mode),
+        },
+        "camera": {"reachable": False, "address": None},
+    }
     try:
-        usage = None
-        if mode == "mock":
-            inspection = mock_inspection()
-        elif mode == "openai":
-            api_key = os.getenv("OPENAI_API_KEY", "").strip()
-            if not api_key:
-                return error_response(
-                    503,
-                    "backend_not_configured",
-                    "The local analysis service has no API key configured.",
-                    False,
-                )
-            async with analysis_lock:
-                inspection, usage = await run_in_threadpool(
-                    analyze_with_openai, image_bytes, model, api_key
-                )
-        else:
-            return error_response(503, "invalid_backend_mode", "The backend mode is invalid.", False)
-    except openai.AuthenticationError:
-        return error_response(401, "authentication_error", "The API key was rejected.", False)
-    except openai.RateLimitError as exc:
-        api_code = getattr(getattr(exc, "body", None), "get", lambda *_: None)("code")
-        if api_code == "insufficient_quota" or "quota" in str(exc).lower():
-            return error_response(
-                402,
-                "quota_exceeded",
-                "The OpenAI project has no available API credit.",
-                False,
-            )
-        return error_response(429, "rate_limited", "The analysis service is busy. Try again shortly.", True)
-    except openai.APITimeoutError:
-        return error_response(504, "upstream_timeout", "OpenAI analysis timed out.", True)
-    except openai.APIConnectionError:
-        return error_response(503, "upstream_unavailable", "OpenAI could not be reached.", True)
-    except openai.BadRequestError:
-        return error_response(502, "upstream_request_rejected", "OpenAI rejected the analysis request.", False)
-    except (ValueError, TypeError):
-        return error_response(502, "invalid_model_response", "The model result could not be validated.", True)
+        address = await run_in_threadpool(camera.address, search)
+        health_data = await run_in_threadpool(camera.health)
+        status["camera"] = {
+            "reachable": True,
+            "address": address,
+            "stream_url": f"http://{address}:81/stream",
+            "rssi": health_data.get("rssi"),
+            "firmware": health_data.get("firmware"),
+            "sd": health_data.get("sd"),
+            "oled": health_data.get("oled", {}).get("present"),
+        }
+    except camera.CameraError as exc:
+        status["camera"]["error"] = {"code": exc.code, "message": exc.message}
+    return status
 
-    latency_ms = round((time.perf_counter() - started) * 1000)
-    return serialize_result(
-        inspection,
-        width=width,
-        height=height,
-        mode=mode,
-        model=model if mode == "openai" else "deterministic-mock",
-        latency_ms=latency_ms,
-        usage=usage,
-    )
+
+@app.post("/api/inspect")
+async def api_inspect():
+    """Capture, analyse and save in one action, streaming each stage as it
+    actually happens so the dashboard never shows progress it hasn't made."""
+
+    def line(payload: dict) -> bytes:
+        return (json.dumps(payload) + "\n").encode()
+
+    async def stages():
+        if analysis_lock.locked():
+            yield line({"stage": "error", "error": {"code": "busy", "retryable": True,
+                                                    "message": "An inspection is already running. Wait for it to finish."}})
+            return
+        async with analysis_lock:
+            yield line({"stage": "capturing"})
+            try:
+                image_bytes, capture_id = await run_in_threadpool(camera.capture)
+            except camera.CameraError as exc:
+                yield line({"stage": "error", "error": {"code": exc.code, "message": exc.message, "retryable": True}})
+                return
+            token = remember_capture(image_bytes)
+
+            yield line({"stage": "analyzing", "capture": token})
+            await run_in_threadpool(camera.show_status, {"state": "analyzing"})
+            try:
+                result = await run_in_threadpool(analyze_image, image_bytes)
+            except AnalysisError as exc:
+                await run_in_threadpool(camera.show_status, {"state": "error", "message": "ANALYSIS FAILED"})
+                yield line({"stage": "error", "capture": token, "error": exc.as_dict()})
+                return
+            result["inspected_at"] = utc_now()
+            await run_in_threadpool(camera.show_status, {
+                "state": "result", "status": result["status"],
+                "defects": len(result["defects"]), "severity": top_severity(result["defects"]),
+            })
+
+            yield line({"stage": "saving", "capture": token})
+            record_id, save_error = None, None
+            try:
+                thumbnail = await run_in_threadpool(make_thumbnail, image_bytes)
+                record_id = await run_in_threadpool(
+                    camera.save_record, capture_id, result, thumbnail, result["inspected_at"])
+            except camera.CameraError as exc:
+                save_error = {"code": exc.code, "message": exc.message}
+            yield line({"stage": "done", "capture": token, "result": result,
+                        "record_id": record_id, "save_error": save_error})
+
+    return StreamingResponse(stages(), media_type="application/x-ndjson")
+
+
+@app.get("/api/captures/{token}.jpg")
+def api_capture_image(token: str):
+    image_bytes = _recent_captures.get(token)
+    if image_bytes is None:
+        return error_response(404, "capture_expired", "That capture is no longer held. Open it from History.", False)
+    return Response(image_bytes, media_type="image/jpeg")
+
+
+@app.get("/api/records")
+async def api_records(before: int = 0, limit: int = 24):
+    try:
+        return await run_in_threadpool(camera.list_records, max(before, 0), min(max(limit, 1), 100))
+    except camera.CameraError as exc:
+        return camera_error_response(exc)
+
+
+@app.get("/api/records/{record_id}")
+async def api_record(record_id: str):
+    if not RECORD_ID.match(record_id):
+        return error_response(404, "not_found", "No such inspection.", False)
+    try:
+        status, _, body = await run_in_threadpool(camera.record_file, record_id, "result.json")
+    except camera.CameraError as exc:
+        return camera_error_response(exc)
+    if status != 200:
+        return error_response(404, "not_found", "No such inspection on the camera.", False)
+    return JSONResponse(json.loads(body))
+
+
+@app.get("/api/records/{record_id}/{name}")
+async def api_record_image(record_id: str, name: str, request: Request):
+    if not RECORD_ID.match(record_id) or name not in ("image.jpg", "thumb.jpg"):
+        return error_response(404, "not_found", "No such file.", False)
+    try:
+        status, headers, body = await run_in_threadpool(
+            camera.record_file, record_id, name, request.headers.get("if-none-match"))
+    except camera.CameraError as exc:
+        return camera_error_response(exc)
+    # Pass the camera's ETag through so the browser revalidates instead of
+    # re-downloading images over a slow Wi-Fi link.
+    passthrough = {"Cache-Control": "private, no-cache"}
+    if headers.get("etag"):
+        passthrough["ETag"] = headers["etag"]
+    if status == 304:
+        return Response(status_code=304, headers=passthrough)
+    if status != 200:
+        return error_response(404, "not_found", "No such file on the camera.", False)
+    return Response(body, media_type="image/jpeg", headers=passthrough)
+
+
+@app.delete("/api/records/{record_id}")
+async def api_delete_record(record_id: str, request: Request):
+    # Deleting is only allowed from the laptop itself, not other devices on
+    # the network, because the service has no login.
+    if request.client is None or request.client.host not in ("127.0.0.1", "::1", "testclient"):
+        return error_response(403, "forbidden", "Inspections can only be deleted on the laptop running the service.", False)
+    if not RECORD_ID.match(record_id):
+        return error_response(404, "not_found", "No such inspection.", False)
+    try:
+        await run_in_threadpool(camera.delete_record, record_id)
+    except camera.CameraError as exc:
+        return camera_error_response(exc)
+    return {"deleted": True}
+
+
+DASHBOARD_DIR = PROJECT_ROOT / "dashboard"
+if DASHBOARD_DIR.is_dir():
+    # Mounted last so it never shadows the API routes above.
+    app.mount("/", StaticFiles(directory=DASHBOARD_DIR, html=True), name="dashboard")

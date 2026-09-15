@@ -152,3 +152,99 @@ def test_broken_knowledge_base_fails_at_startup(tmp_path, mutation, message):
     broken.write_text(json.dumps(data))
     with pytest.raises(ValueError, match=message):
         main.load_root_causes(broken)
+
+
+# ---- dashboard API (fake camera) -------------------------------------------
+
+from backend import camera as camera_module
+
+
+class FakeCamera:
+    def __init__(self, save_error=None, reachable=True):
+        self.statuses, self.saved = [], []
+        self.save_error, self.reachable = save_error, reachable
+
+    def install(self, monkeypatch):
+        def need():
+            if not self.reachable:
+                raise camera_module.NOT_FOUND
+        monkeypatch.setattr(camera_module, "capture", lambda: (need(), (jpeg(), "7"))[1])
+        monkeypatch.setattr(camera_module, "show_status", self.statuses.append)
+        monkeypatch.setattr(camera_module, "save_record", self.save)
+        monkeypatch.setattr(camera_module, "address", lambda search=False: (need(), "192.168.1.20")[1])
+        monkeypatch.setattr(camera_module, "health", lambda: {"rssi": -60, "firmware": "3.3.0", "sd": {"present": True}})
+        return self
+
+    def save(self, capture_id, result, thumbnail, client_time):
+        if self.save_error:
+            raise self.save_error
+        self.saved.append((capture_id, result, thumbnail, client_time))
+        return "000042"
+
+
+def stages(response):
+    return [json.loads(line) for line in response.text.splitlines() if line.strip()]
+
+
+def test_health_uses_plain_mode_label(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "openai")
+    assert client.get("/health").json()["mode_label"] == "Vision model"
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+    assert client.get("/health").json()["mode_label"] == "Demo mode"
+
+
+def test_inspect_streams_real_stages_and_saves(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+    fake = FakeCamera().install(monkeypatch)
+    events = stages(client.post("/api/inspect"))
+    assert [e["stage"] for e in events] == ["capturing", "analyzing", "saving", "done"]
+    done = events[-1]
+    assert done["record_id"] == "000042" and done["save_error"] is None
+    assert done["result"]["meta"]["mode_label"] == "Demo mode"
+    capture_id, result, thumbnail, client_time = fake.saved[0]
+    assert capture_id == "7" and result["inspected_at"] == client_time
+    assert Image.open(io.BytesIO(thumbnail)).size == (320, 240)
+    assert fake.statuses[0] == {"state": "analyzing"}
+    assert fake.statuses[-1]["state"] == "result" and fake.statuses[-1]["defects"] == 2
+    held = client.get(f"/api/captures/{done['capture']}.jpg")
+    assert held.status_code == 200 and held.headers["content-type"] == "image/jpeg"
+
+
+def test_inspect_reports_unreachable_camera(monkeypatch):
+    FakeCamera(reachable=False).install(monkeypatch)
+    events = stages(client.post("/api/inspect"))
+    assert [e["stage"] for e in events] == ["capturing", "error"]
+    assert events[-1]["error"]["code"] == "camera_not_found"
+
+
+def test_result_still_returned_when_saving_fails(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+    FakeCamera(save_error=camera_module.CameraError("no_sd_card", "No SD card.", 503)).install(monkeypatch)
+    done = stages(client.post("/api/inspect"))[-1]
+    assert done["stage"] == "done" and done["record_id"] is None
+    assert done["save_error"]["code"] == "no_sd_card" and done["result"]["defects"]
+
+
+def test_record_images_pass_etag_through(monkeypatch):
+    calls = []
+    def record_file(record_id, name, etag=None):
+        calls.append(etag)
+        return (304, {"etag": '"abc-000001-t"'}, b"") if etag else (200, {"etag": '"abc-000001-t"'}, b"jpegbytes")
+    monkeypatch.setattr(camera_module, "record_file", record_file)
+    first = client.get("/api/records/000001/thumb.jpg")
+    assert first.status_code == 200 and first.headers["etag"] == '"abc-000001-t"'
+    assert first.headers["cache-control"] == "private, no-cache"
+    again = client.get("/api/records/000001/thumb.jpg", headers={"If-None-Match": '"abc-000001-t"'})
+    assert again.status_code == 304 and calls == [None, '"abc-000001-t"']
+    assert client.get("/api/records/000001/secrets.txt").status_code == 404
+
+
+def test_delete_only_from_this_computer(monkeypatch):
+    deleted = []
+    monkeypatch.setattr(camera_module, "delete_record", deleted.append)
+    assert client.delete("/api/records/000003").json() == {"deleted": True}
+    async def from_lan_device(scope, receive, send):
+        await main.app({**scope, "client": ("192.168.1.50", 50000)}, receive, send)
+    remote = TestClient(from_lan_device)
+    assert remote.delete("/api/records/000004").status_code == 403
+    assert deleted == ["000003"]

@@ -159,11 +159,13 @@ inline uint32_t create(const uint8_t *image, size_t imageLen, const uint8_t *res
     return 0;
   }
 
+  // Prefer the moment the service analysed the image, so History and the
+  // record itself show the same time; fall back to the camera's NTP clock.
   char created[24] = "";
-  if (clockSet()) {
-    isoNow(created, sizeof(created));
-  } else if (strlen(meta.clientTime) == 20 && meta.clientTime[10] == 'T' && meta.clientTime[19] == 'Z') {
+  if (strlen(meta.clientTime) == 20 && meta.clientTime[10] == 'T' && meta.clientTime[19] == 'Z') {
     strncpy(created, meta.clientTime, sizeof(created) - 1);
+  } else if (clockSet()) {
+    isoNow(created, sizeof(created));
   }
   char status[24], priority[12];
   sanitize(meta.status, status, sizeof(status));

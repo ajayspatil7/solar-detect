@@ -931,6 +931,50 @@ with any firmware changes the dashboard build needs, to save a rewiring cycle.
 DHCP moved the camera from 192.168.1.19 to .20 after rewiring; its address is
 on the OLED footer.
 
+### 6.7 Laptop dashboard — built and verified against the camera 2026-09-15
+
+The approved mockup is now the working interface, served by the backend at
+`http://localhost:8000/` (`dashboard/index.html`, `app.css`, `app.js`). The
+launcher opens it instead of the camera's own page.
+
+**The backend is the gateway to the camera** (`backend/camera.py`). The
+browser talks only to the local service; the service captures, analyses,
+saves, lists, fetches and deletes on the camera. Only the live MJPEG view is
+loaded straight from the camera, by an `<img>`. So the dashboard needs no
+cross-origin access to the camera -- it works on the firmware already flashed,
+despite the pending header-limit fix -- and a changing camera address (DHCP,
+a new venue) is handled in one place. Discovery moved here from the launcher,
+which now imports it.
+
+- `POST /api/inspect` runs capture, analysis and save as one action and
+  streams NDJSON stages (`capturing`, `analyzing`, `saving`, `done` or
+  `error`) as each actually happens, so progress is never simulated. The OLED
+  is updated at each stage. A save failure (e.g. no SD card) still returns the
+  result, with the reason.
+- Thumbnails (320x240) are made by the backend with Pillow. The latest three
+  captures are held in memory only, never written to the laptop's disk.
+- `GET /api/status`, `GET /api/records`, `GET /api/records/<id>`,
+  `GET /api/records/<id>/{image,thumb}.jpg` (camera ETags passed through for
+  304 revalidation), `DELETE /api/records/<id>` (loopback clients only, since
+  the service has no login).
+- Analysis was refactored into `analyze_image()`, shared by `/analyze` and the
+  dashboard. User-facing wording says "Vision model" (or "Demo mode") rather
+  than the vendor name, at the client's request; `/health` and result `meta`
+  gain `mode_label`.
+
+**Verified in a real browser against the camera** (demo analysis, no cost):
+live view streamed; one click captured, analysed and saved inspection
+`000002` in under 2 s with regions and root cause shown; History listed it
+with a thumbnail read back from the SD card; the record view loaded the stored
+image with regions; deleting it from the dashboard removed it and returned
+History to its empty state. Backend suite: 27 tests passing.
+
+**Pending flash** (compiled, 1,170,026 bytes, no warnings): the
+`max_resp_headers` fix, the fallback page's "Vision model" labels, and record
+timestamps preferring the service's analysis time so History and the record
+view agree to the second (they differed by one minute when one side used the
+camera's NTP clock).
+
 ## Future phases
 
 - **Phase 4:** Replace/revoke the exposed no-credit test key, run a curated real

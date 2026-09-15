@@ -10,19 +10,19 @@ Run it through "Start Solar Inspector.bat" (Windows) or
 
 from __future__ import annotations
 
-import ipaddress
 import json
-import socket
+import os
 import sys
 import threading
 import time
 import urllib.request
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor
 from getpass import getpass
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT))
+from backend import camera as cam  # noqa: E402  (stdlib-only; safe before the venv check)
 ENV_FILE = PROJECT / ".env.local"
 PORT = 8000
 PLACEHOLDER = "replace-with-your-openai-project-key"
@@ -102,55 +102,11 @@ def ensure_api_key() -> bool:
 
 # --------------------------------------------------------------- network ----
 def lan_address() -> str | None:
-    """The address other devices on the Wi-Fi can reach this computer at."""
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.connect(("8.8.8.8", 80))  # no packets are sent
-        return probe.getsockname()[0]
-    except OSError:
-        return None
-    finally:
-        probe.close()
+    return cam.lan_address()
 
 
-def probe_camera(address: str, timeout: float) -> bool:
-    try:
-        with urllib.request.urlopen(f"http://{address}/health", timeout=timeout) as r:
-            body = r.read(1400).decode("utf-8", "replace")
-        return "capture_width" in body and "firmware" in body
-    except Exception:
-        return False
-
-
-def find_camera(host_ip: str, remembered: str = "") -> str | None:
-    """Check the last known address first, then sweep the subnet.
-
-    Two passes with a widening timeout: a camera on a weak link can miss a
-    short deadline, and Windows is less tolerant of large connection fan-outs
-    than macOS, so the worker count stays modest.
-    """
-    if remembered and probe_camera(remembered, 3.0):
-        return remembered
-
-    # An iPhone hotspot is always 172.20.10.0/28 -- fourteen usable addresses.
-    # Sweeping a /24 there means 240 pointless probes and a long wait, so the
-    # search starts narrow and only widens if nothing answers.
-    prefix = ".".join(host_ip.split(".")[:3])
-    if host_ip.startswith("172.20.10."):
-        passes = [([f"{prefix}.{n}" for n in range(1, 15)], 2.0, 14)]
-    else:
-        near = [f"{prefix}.{n}" for n in range(1, 26)]
-        full = [str(a) for a in ipaddress.ip_network(f"{host_ip}/24", strict=False).hosts()]
-        passes = [(near, 1.5, 25), (full, 1.5, 64), (full, 3.0, 32)]
-
-    for index, (candidates, timeout, workers) in enumerate(passes):
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for address, ok in pool.map(lambda a: (a, probe_camera(a, timeout)), candidates):
-                if ok:
-                    return address
-        if index + 1 < len(passes):
-            print("  Widening the search...")
-    return None
+def find_camera(host_ip: str | None, remembered: str = "") -> str | None:
+    return cam.discover(host_ip, remembered)
 
 
 # ------------------------------------------------------- follow the laptop --
@@ -276,26 +232,25 @@ def main() -> int:
             settings["CAMERA_IP"] = camera  # remembered so the next run is instant
             write_env(settings)
 
-    backend_url = f"http://{host_ip}:{PORT}"
+    dashboard = f"http://localhost:{PORT}/"
     if camera:
-        page = f"http://{camera}/?backend={backend_url}"
+        os.environ["CAMERA_IP"] = camera  # the service in this process reads it
         banner("READY")
-        print(f"  Camera  : {camera}")
-        print(f"  Service : {backend_url}")
-        print("\n  Opening the inspection page in your browser...")
-        webbrowser.open(page)
+        print(f"  Camera    : {camera}")
     else:
         banner("CAMERA NOT FOUND")
-        print("  The analysis service is running, but no camera answered on this")
-        print("  network. Check that:")
+        print("  The dashboard will open, but no camera answered on this network.")
+        print("  Check that:")
         print("    - the camera has power (its small screen is lit)")
         print("    - its screen shows READY, not SETUP or NO WIFI")
         print("    - it is on the SAME Wi-Fi as this computer")
+        print("\n  Then press Find camera in the dashboard.")
         print("\n  To move the camera to this network by hand: unplug and replug it")
         print("  three times quickly until its screen shows SETUP, join 'SOLAR-SETUP'")
         print("  from a phone, and open http://192.168.4.1")
-        print(f"\n  Once the camera screen shows an address, open it in a browser")
-        print(f"  and set the backend to: {backend_url}")
+    print(f"  Dashboard : {dashboard}")
+    print("\n  Opening the dashboard in your browser...")
+    webbrowser.open(dashboard)
 
     print("\n  Leave this window open while you use the inspector.")
     print("  Closing it stops the analysis service.\n")
