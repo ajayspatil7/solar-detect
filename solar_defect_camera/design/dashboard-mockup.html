@@ -1,0 +1,529 @@
+<title>Solar Inspector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#EEF1F4; --surface:#FFFFFF; --surface-2:#F5F7F9; --ink:#121A23; --muted:#5B6875; --faint:#8793A0; --line:#D9DFE5;
+  --accent:#2E4D82; --accent-ink:#FFFFFF; --accent-soft:#E2E9F4;
+  --urgent:#B3372B; --urgent-soft:#F6E2DF; --high:#C0601C; --high-soft:#F7E7D9; --medium:#946E0C; --medium-soft:#F4ECD3; --low:#3C7F62; --low-soft:#DFEFE7; --none:#667380; --none-soft:#E7EBEF;
+  --ov-urgent:#FF6B5B; --ov-high:#FF9F43; --ov-medium:#FFD23F; --ov-low:#5EE0A0; --ov-none:#C9D2DB;
+  --stage:#1A2029;
+  --display:"Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0D1319; --surface:#141C24; --surface-2:#19222C; --ink:#E4E9EE; --muted:#9AA7B4; --faint:#6F7C89; --line:#26313C;
+    --accent:#8FB0E8; --accent-ink:#0D1319; --accent-soft:#1D2A3E;
+    --urgent:#F08A7E; --urgent-soft:#3A1F1C; --high:#F2A266; --high-soft:#37251A; --medium:#E3C05A; --medium-soft:#322A15; --low:#7CC7A3; --low-soft:#162F29; --none:#9AA7B4; --none-soft:#212B35;
+    --stage:#090D12;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0D1319; --surface:#141C24; --surface-2:#19222C; --ink:#E4E9EE; --muted:#9AA7B4; --faint:#6F7C89; --line:#26313C;
+  --accent:#8FB0E8; --accent-ink:#0D1319; --accent-soft:#1D2A3E;
+  --urgent:#F08A7E; --urgent-soft:#3A1F1C; --high:#F2A266; --high-soft:#37251A; --medium:#E3C05A; --medium-soft:#322A15; --low:#7CC7A3; --low-soft:#162F29; --none:#9AA7B4; --none-soft:#212B35;
+  --stage:#090D12;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font:15px/1.5 var(--body);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ---- top bar ---------------------------------------------------------- */
+.topbar{display:flex;align-items:center;gap:16px;padding-block:10px;padding-inline:20px;background:var(--surface);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--display);font-weight:700;font-size:20px;letter-spacing:.01em}
+.brand svg{flex:none}
+.sample{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:2px 7px}
+.topbar .spacer{flex:1}
+.status{position:relative}
+.status summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted);padding:6px 10px;border-radius:6px}
+.status summary::-webkit-details-marker{display:none}
+.status summary:hover{background:var(--surface-2)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--low);box-shadow:0 0 0 3px var(--low-soft)}
+.status-panel{position:absolute;right:0;top:calc(100% + 6px);z-index:5;width:300px;max-width:calc(100vw - 32px);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;box-shadow:0 10px 30px rgba(10,20,30,.14)}
+.status-panel dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 14px;font-size:13px}
+.status-panel dt{color:var(--muted)}
+.status-panel dd{margin:0;text-align:right}
+
+/* ---- shell ------------------------------------------------------------ */
+.shell{display:grid;grid-template-columns:76px 1fr;min-height:calc(100vh - 53px)}
+.rail{background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;gap:4px;padding:12px 8px}
+.nav{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 4px;border:0;border-radius:8px;background:none;color:var(--muted);font-size:12px;font-weight:500;cursor:pointer}
+.nav:hover{background:var(--surface-2);color:var(--ink)}
+.nav[aria-current="page"]{background:var(--accent-soft);color:var(--accent)}
+.nav svg{width:22px;height:22px}
+main{padding-block:24px;padding-inline:28px;min-width:0}
+.view[hidden]{display:none}
+.view-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+h1{font-family:var(--display);font-weight:600;font-size:28px;line-height:1.1;margin:0;text-wrap:balance}
+.view-head .sub{color:var(--muted);font-size:14px}
+
+/* ---- inspect layout --------------------------------------------------- */
+.inspect{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(320px,1fr);gap:24px;align-items:start}
+.stage-col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.stage{position:relative;aspect-ratio:4/3;max-width:100%;background:var(--stage);border-radius:10px;overflow:hidden}
+.stage canvas,.stage svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.stage-badge{position:absolute;left:12px;top:12px;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#E8EDF2;background:rgba(10,14,20,.62);padding:4px 8px;border-radius:4px}
+.stage.busy::after{content:"";position:absolute;inset:0;background:rgba(10,14,20,.45)}
+.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.toolbar .meta{margin-left:auto;font-size:12px;color:var(--muted)}
+.btn{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:9px 14px;font-weight:500;cursor:pointer}
+.btn:hover{border-color:var(--faint)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn-primary:hover{filter:brightness(1.08);border-color:var(--accent)}
+.btn[disabled]{opacity:.6;cursor:progress}
+.toggle{display:inline-flex;align-items:center;gap:8px;font-size:14px;color:var(--muted);cursor:pointer}
+.toggle input{accent-color:var(--accent);width:16px;height:16px}
+
+/* ---- findings --------------------------------------------------------- */
+.findings{display:flex;flex-direction:column;gap:16px;min-width:0}
+.verdict{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 18px 16px}
+.eyebrow{margin:0 0 6px;font-size:12px;color:var(--muted)}
+.verdict-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.verdict h2{font-family:var(--display);font-weight:700;font-size:26px;line-height:1.1;margin:0}
+.verdict p.summary{margin:10px 0 0;color:var(--muted);font-size:14px;max-width:60ch}
+
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px 3px 8px;border-radius:999px;white-space:nowrap;background:var(--none-soft);color:var(--none)}
+.chip::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.chip.plain::before{display:none}
+.chip.p-urgent{background:var(--urgent-soft);color:var(--urgent)}
+.chip.p-high{background:var(--high-soft);color:var(--high)}
+.chip.p-medium{background:var(--medium-soft);color:var(--medium)}
+.chip.p-low{background:var(--low-soft);color:var(--low)}
+.chip-lg{font-size:13px;padding:5px 12px 5px 10px}
+
+.defects{list-style:none;margin:0;padding:0;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.defects li+li{border-top:1px solid var(--line)}
+.defect{width:100%;display:grid;grid-template-columns:30px 1fr auto;gap:12px;align-items:center;text-align:left;border:0;background:none;padding:12px 16px;cursor:pointer}
+.defect:hover{background:var(--surface-2)}
+.defect[aria-pressed="true"]{background:var(--accent-soft)}
+.idx{width:30px;height:30px;border-radius:6px;display:grid;place-items:center;font-family:var(--mono);font-weight:500;font-size:14px;color:#10161D}
+.defect .name{font-weight:600}
+.defect .cause-line{display:block;font-size:13px;color:var(--muted)}
+
+.cause{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px}
+.cause .kicker{margin:0;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.cause h3{font-family:var(--display);font-weight:600;font-size:21px;line-height:1.2;margin:4px 0 10px;text-wrap:balance}
+.cause .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.cause dl{margin:0;display:flex;flex-direction:column;gap:12px}
+.cause dt{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
+.cause dd{margin:0;font-size:14px;max-width:62ch}
+.cause dd ul{margin:0;padding-left:18px}
+.cause .evidence{border-left:2px solid var(--line);padding-left:10px;font-style:italic}
+.cause .note{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.empty{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px;color:var(--muted);font-size:14px}
+
+/* ---- history ---------------------------------------------------------- */
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.filter{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 12px;font-size:13px;font-weight:500;cursor:pointer;color:var(--muted)}
+.filter[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--ground)}
+.table{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.thead,.row{display:grid;grid-template-columns:104px minmax(150px,1.1fr) minmax(130px,1fr) 110px 110px;gap:16px;align-items:center;padding-inline:16px}
+.thead{padding-block:10px;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
+.row{width:100%;border:0;background:none;text-align:left;padding-block:10px;cursor:pointer}
+.row+.row{border-top:1px solid var(--line)}
+.row:hover{background:var(--surface-2)}
+.thumb{width:104px;height:78px;border-radius:6px;display:block;background:var(--stage)}
+.row .id{font-family:var(--mono);font-size:14px;font-weight:500}
+.row .when{display:block;font-size:13px;color:var(--muted)}
+.row .count{font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
+.nores{padding:28px 16px;color:var(--muted);text-align:center}
+
+/* ---- record ----------------------------------------------------------- */
+.back{border:0;background:none;color:var(--accent);font-weight:600;padding:0;cursor:pointer;margin-bottom:10px}
+
+@media (max-width:980px){ .inspect{grid-template-columns:1fr} }
+@media (max-width:760px){
+  .shell{grid-template-columns:1fr}
+  .rail{flex-direction:row;border-right:0;border-bottom:1px solid var(--line);padding:6px 12px}
+  .nav{flex-direction:row;gap:8px;padding:8px 12px;font-size:14px}
+  main{padding-inline:16px}
+  .topbar{padding-inline:16px}
+  .thead{display:none}
+  .row{grid-template-columns:88px 1fr auto;grid-template-areas:"t id pri" "t verdict count";row-gap:2px}
+  .row .c-thumb{grid-area:t}.row .c-id{grid-area:id}.row .c-verdict{grid-area:verdict;font-size:14px}.row .c-count{grid-area:count;text-align:right}.row .c-pri{grid-area:pri;justify-self:end}
+  .thumb{width:88px;height:66px}
+}
+@media (max-width:420px){ .sample{display:none} .status summary .label{display:none} }
+@media (prefers-reduced-motion:reduce){ *{transition:none!important;animation:none!important} }
+@media print{
+  .topbar,.rail,.toolbar,.back,.filters{display:none!important}
+  .shell{display:block} main{padding:0}
+  body{background:#fff}
+  .inspect{grid-template-columns:1fr}
+}
+</style>
+
+<header class="topbar">
+  <div class="brand">
+    <svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true"><rect x="1" y="1" width="24" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 1v18M17 1v18M1 10h24" stroke="currentColor" stroke-width="1.5"/></svg>
+    Solar Inspector
+  </div>
+  <span class="sample" title="Every inspection on this page is illustrative sample data">Sample data</span>
+  <div class="spacer"></div>
+  <details class="status">
+    <summary><span class="dot" aria-hidden="true"></span><span class="label">Camera and analysis ready</span></summary>
+    <div class="status-panel">
+      <dl>
+        <dt>Camera</dt><dd class="mono">172.20.10.3</dd>
+        <dt>Signal</dt><dd class="mono">−61 dBm</dd>
+        <dt>Firmware</dt><dd class="mono">3.2.0</dd>
+        <dt>Storage</dt><dd>microSD · <span class="mono">29.7 GB</span> free</dd>
+        <dt>Records on device</dt><dd class="mono">124</dd>
+        <dt>Analysis</dt><dd>Ready</dd>
+      </dl>
+    </div>
+  </details>
+</header>
+
+<div class="shell">
+  <nav class="rail" aria-label="Main">
+    <button class="nav" id="nav-inspect" data-view="inspect" aria-current="page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3.2"/></svg>
+      Inspect
+    </button>
+    <button class="nav" id="nav-history" data-view="history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.5" y="4.5" width="6" height="4.5" rx="1"/><rect x="3.5" y="14.5" width="6" height="4.5" rx="1"/><path d="M13 6h8M13 8.5h5M13 16h8M13 18.5h5"/></svg>
+      History
+    </button>
+  </nav>
+
+  <main>
+    <section class="view" id="view-inspect" aria-labelledby="h-inspect">
+      <div class="view-head"><h1 id="h-inspect">Inspect</h1><span class="sub">Point the camera at one module, then capture.</span></div>
+      <div class="inspect">
+        <div class="stage-col">
+          <div class="stage" id="stage-inspect">
+            <canvas width="1600" height="1200" aria-label="Captured image of the solar module"></canvas>
+            <svg viewBox="0 0 1600 1200" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <span class="stage-badge" id="badge-inspect">Captured still</span>
+          </div>
+          <div class="toolbar">
+            <button class="btn btn-primary" id="capture">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
+              <span id="capture-label">Capture and analyze</span>
+            </button>
+            <label class="toggle"><input type="checkbox" id="regions-inspect" checked> Show regions</label>
+            <span class="meta mono" id="meta-inspect"></span>
+          </div>
+        </div>
+        <div class="findings" id="findings-inspect"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-history" aria-labelledby="h-history" hidden>
+      <div class="view-head"><h1 id="h-history">History</h1><span class="sub" id="history-count"></span></div>
+      <div class="filters" role="group" aria-label="Filter by priority" id="filters"></div>
+      <div class="table">
+        <div class="thead" aria-hidden="true"><span>Image</span><span>Inspection</span><span>Result</span><span>Regions</span><span>Priority</span></div>
+        <div id="rows"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-record" aria-labelledby="h-record" hidden>
+      <button class="back" id="back">← All inspections</button>
+      <div class="view-head"><h1 id="h-record"></h1><span class="sub" id="record-when"></span></div>
+      <div class="inspect">
+        <div class="stage-col">
+          <div class="stage" id="stage-record">
+            <canvas width="1600" height="1200" aria-label="Stored image of the solar module"></canvas>
+            <svg viewBox="0 0 1600 1200" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <span class="stage-badge">Stored on device</span>
+          </div>
+          <div class="toolbar">
+            <button class="btn" id="print">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M7 9V3h10v6M7 18H4v-7h16v7h-3"/><rect x="7" y="14" width="10" height="7"/></svg>
+              Print report
+            </button>
+            <label class="toggle"><input type="checkbox" id="regions-record" checked> Show regions</label>
+            <span class="meta mono" id="meta-record"></span>
+          </div>
+        </div>
+        <div class="findings" id="findings-record"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+/* ---- curated cause text (from backend/root_causes.json) ---------------- */
+const KB = {
+  bypass_diode_failure:{title:"Failed bypass diode",urgency:"urgent",explanation:"Bypass diodes route current around a shaded or damaged section of cells. If one fails, that section can no longer be bypassed and overheats. Damage often follows a third of the module, matching one diode's section.",verify:["Infrared thermography","Bypass diode test at the junction box"],action:"Disconnect the module. Replace the diode or the module. A failed diode is a fire risk."},
+  hotspot_cell_mismatch:{title:"Hotspot from a damaged or mismatched cell",urgency:"urgent",explanation:"A cracked or weaker cell cannot carry the same current as the rest of its string, so it dissipates energy as heat instead of producing it. Sustained heating burns the surrounding materials.",verify:["Infrared thermography under stable sunlight","I-V curve test"],action:"Disconnect and replace the module. Burn marks indicate sustained high temperature and are a fire risk."},
+  mechanical_impact:{title:"Mechanical impact",urgency:"high",explanation:"Hail, stones, falling branches or tools can crack the glass and the cells beneath it. A radiating or star pattern around a single point strongly suggests impact.",verify:["Electroluminescence imaging","Insulation resistance test","Check for recent hail or storm events"],action:"Isolate the module. Cracked glass lets moisture in and can become an electrical safety hazard. Replace, and file an insurance claim if weather caused it."},
+  edge_soiling_low_tilt:{title:"Edge soiling from water pooling",urgency:"low",explanation:"On shallow tilt angles, rainwater pools against the lower frame and deposits dirt as it evaporates, forming a band that repeatedly shades the bottom row of cells.",verify:["Check for a band along the lower edge","Measure the mounting tilt angle"],action:"Clean the lower edge. Consider a steeper tilt if the band keeps returning."},
+  dust_accumulation:{title:"Dust and airborne particulate build-up",urgency:"low",explanation:"An even film of dust, sand or pollution residue settles on the glass and reduces the light reaching the cells. It builds fastest in dry, windy or industrial locations and between rains.",verify:["Compare output before and after cleaning","Inspect the full array for a uniform film"],action:"Clean with soft water and a non-abrasive brush. Set a cleaning interval based on local dust conditions."},
+  bird_droppings:{title:"Bird droppings",urgency:"medium",explanation:"Droppings are opaque and localised. Unlike an even dust film, they can fully shade individual cells and force them to heat up, which can develop into a hotspot if left in place.",verify:["Close visual inspection","Infrared thermography of the affected cells"],action:"Remove promptly. Consider bird deterrents if the array is used as a perch."},
+  microcracks_with_moisture:{title:"Micro-cracks reacting with moisture",urgency:"medium",explanation:"Snail trails are dark, winding lines that follow invisible micro-cracks in a cell. Moisture reaches the cracks and reacts with the cell's silver paste, making the crack pattern visible.",verify:["Electroluminescence imaging to map the cracks","I-V curve test"],action:"Monitor output. Replace if power loss is significant; the cracks themselves will not heal."},
+  moisture_ingress:{title:"Moisture ingress",urgency:"high",explanation:"Failed edge seals or a damaged backsheet let water vapour into the laminate, where it weakens bonding between layers and corrodes the cell contacts.",verify:["Inspect edge seals and backsheet","Insulation resistance test","Infrared thermography"],action:"Replace the module. Moisture inside a module is an electrical insulation risk."},
+  undetermined:{title:"Cause not determinable from the image",urgency:null,explanation:"The visible evidence is not specific enough to attribute a probable cause. An on-site inspection is needed.",verify:["On-site inspection by a qualified technician"],action:"Inspect the module in person before deciding on any action."}
+};
+const TYPE = {possible_surface_crack:"Surface crack",discoloration:"Discoloration",soiling:"Soiling",burn_mark:"Burn mark",shading:"Shading",snail_trail:"Snail trail",delamination:"Delamination",other_visible_anomaly:"Other anomaly"};
+const VERDICT = {defect_suspected:"Defects found",no_visible_defect:"No visible defects",uncertain:"Uncertain result",retake_required:"Retake needed"};
+const RANK = {none:0,low:1,medium:2,high:3,urgent:4};
+const PLABEL = {none:"No action",low:"Low",medium:"Medium",high:"High",urgent:"Urgent"};
+const OV = {urgent:"var(--ov-urgent)",high:"var(--ov-high)",medium:"var(--ov-medium)",low:"var(--ov-low)",none:"var(--ov-none)"};
+const OVHEX = {urgent:"#FF6B5B",high:"#FF9F43",medium:"#FFD23F",low:"#5EE0A0",none:"#C9D2DB"};
+
+function defect(type, severity, confidence, cause, evidence, box){
+  const k = KB[cause];
+  return {type, severity, confidence, box, cause, evidence, urgency: k.urgency || severity};
+}
+function priorityOf(r){
+  if (r.status === "retake_required" || !r.defects.length) return "none";
+  return r.defects.reduce((p, d) => RANK[d.urgency] > RANK[p] ? d.urgency : p, "none");
+}
+
+/* ---- sample inspections (illustrative, not real device data) ----------- */
+const RECORDS = [
+  {id:"000124", when:"15 Sep 2026, 14:32", seed:7, status:"defect_suspected", kb:"71.4 KB",
+   summary:"Three regions need attention. One shows heat damage and should be isolated before the next production day.",
+   defects:[
+     defect("burn_mark","high","medium","bypass_diode_failure","Scorching sits in the upper-right third of the module, the section one bypass diode protects, with no shading source visible.",[1050,296,1226,468]),
+     defect("possible_surface_crack","medium","medium","mechanical_impact","Crack lines radiate from a single point on one cell, a star pattern rather than a line along a clamp or edge.",[370,432,574,620]),
+     defect("soiling","low","high","edge_soiling_low_tilt","Dirt forms a continuous band along the lower frame edge only; the rest of the glass is clean.",[124,918,1476,1030])
+   ]},
+  {id:"000123", when:"15 Sep 2026, 11:05", seed:3, status:"no_visible_defect", kb:"64.0 KB",
+   summary:"Glass, cells and frame look clear. No visible anomaly at this image quality.", defects:[]},
+  {id:"000122", when:"14 Sep 2026, 16:48", seed:11, status:"defect_suspected", kb:"69.2 KB",
+   summary:"Surface soiling across the module, with a few opaque droppings that can heat individual cells.",
+   defects:[
+     defect("soiling","medium","high","bird_droppings","Opaque white splats of irregular shape on three cells in the middle rows.",[640,470,930,640]),
+     defect("soiling","low","medium","dust_accumulation","An even light haze across most of the glass with no edge concentration.",[150,180,1450,880])
+   ]},
+  {id:"000121", when:"14 Sep 2026, 10:12", seed:5, status:"retake_required", dark:true, kb:"38.7 KB",
+   summary:"The image is too dark to inspect. Check lighting and framing, then capture again.", defects:[]},
+  {id:"000120", when:"12 Sep 2026, 15:30", seed:19, status:"defect_suspected", kb:"73.8 KB",
+   summary:"Dark winding lines across two cells follow the pattern of hidden micro-cracks.",
+   defects:[ defect("snail_trail","medium","medium","microcracks_with_moisture","Thin dark lines branch across two adjacent cells without following busbars or cell edges.",[800,600,1090,860]) ]},
+  {id:"000119", when:"11 Sep 2026, 13:02", seed:23, status:"defect_suspected", kb:"70.1 KB",
+   summary:"A single burn mark centred on one cell. Isolate the module.",
+   defects:[ defect("burn_mark","high","high","hotspot_cell_mismatch","Discoloration centred on one cell with a darker core and no pattern across the diode section.",[500,300,660,470]) ]},
+  {id:"000118", when:"10 Sep 2026, 09:47", seed:29, status:"uncertain", kb:"66.5 KB",
+   summary:"Faint uneven tone on a corner cell. Evidence is too weak to attribute a cause.",
+   defects:[ defect("discoloration","low","low","undetermined","Tone difference is slight and could be reflection rather than material change.",[1290,176,1470,340]) ]},
+  {id:"000117", when:"9 Sep 2026, 17:20", seed:31, status:"defect_suspected", kb:"75.9 KB",
+   summary:"Milky patches near the frame suggest the layers are separating.",
+   defects:[ defect("delamination","high","medium","moisture_ingress","Cloudy patches start at the left frame edge and fade inward, consistent with a failing edge seal.",[124,300,420,760]) ]}
+];
+
+/* ---- drawn module photo ------------------------------------------------ */
+function rng(seed){ return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const GEO = {fx:92, fy:140, fw:1416, fh:920, ix:122, iy:170, cols:10, rows:6};
+GEO.cw = (1600 - 2 * GEO.ix) / GEO.cols; GEO.ch = (1200 - 2 * GEO.iy) / GEO.rows;
+
+function drawModule(canvas, rec){
+  const ctx = canvas.getContext("2d"), s = canvas.width / 1600, r = rng(rec.seed);
+  ctx.setTransform(s, 0, 0, s, 0, 0);
+  let g = ctx.createLinearGradient(0, 0, 1600, 1200); g.addColorStop(0, "#4a4f55"); g.addColorStop(1, "#2c3035");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 1600, 1200);
+  ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.fillRect(GEO.fx + 18, GEO.fy + 22, GEO.fw, GEO.fh);
+  ctx.fillStyle = "#b8bfc6"; ctx.fillRect(GEO.fx, GEO.fy, GEO.fw, GEO.fh);
+  ctx.fillStyle = "#8d959d"; ctx.fillRect(GEO.fx + 14, GEO.fy + 14, GEO.fw - 28, GEO.fh - 28);
+  ctx.fillStyle = "#c4ccd3"; ctx.fillRect(GEO.ix - 8, GEO.iy - 8, 1600 - 2 * GEO.ix + 16, 1200 - 2 * GEO.iy + 16);
+  for (let c = 0; c < GEO.cols; c++) for (let w = 0; w < GEO.rows; w++){
+    const x = GEO.ix + c * GEO.cw + 4, y = GEO.iy + w * GEO.ch + 4, cw = GEO.cw - 8, ch = GEO.ch - 8, t = r() * 10;
+    const cg = ctx.createLinearGradient(x, y, x + cw, y + ch);
+    cg.addColorStop(0, `rgb(${26 + t},${40 + t},${66 + t})`); cg.addColorStop(1, `rgb(${14 + t},${24 + t},${44 + t})`);
+    ctx.fillStyle = cg; ctx.fillRect(x, y, cw, ch);
+    ctx.strokeStyle = "rgba(170,182,196,.55)"; ctx.lineWidth = 2;
+    for (let b = 1; b <= 3; b++){ const bx = x + cw * b / 4; ctx.beginPath(); ctx.moveTo(bx, y); ctx.lineTo(bx, y + ch); ctx.stroke(); }
+  }
+  for (const d of rec.defects) drawDefect(ctx, d, r);
+  g = ctx.createLinearGradient(200, 0, 1300, 1200);
+  g.addColorStop(0, "rgba(255,255,255,0)"); g.addColorStop(.45, "rgba(255,255,255,.09)"); g.addColorStop(.6, "rgba(255,255,255,0)");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 1600, 1200);
+  if (rec.dark){ ctx.fillStyle = "rgba(4,6,9,.86)"; ctx.fillRect(0, 0, 1600, 1200); }
+}
+function drawDefect(ctx, d, r){
+  const [x1, y1, x2, y2] = d.box, cx = (x1 + x2) / 2, cy = (y1 + y2) / 2, w = x2 - x1, h = y2 - y1;
+  if (d.type === "burn_mark"){
+    let g = ctx.createRadialGradient(cx, cy, 4, cx, cy, Math.max(w, h) * .55);
+    g.addColorStop(0, "rgba(18,8,2,.96)"); g.addColorStop(.35, "rgba(96,48,14,.85)"); g.addColorStop(.7, "rgba(150,96,40,.35)"); g.addColorStop(1, "rgba(150,96,40,0)");
+    ctx.fillStyle = g; ctx.fillRect(x1 - 20, y1 - 20, w + 40, h + 40);
+  } else if (d.type === "possible_surface_crack"){
+    for (let i = 0; i < 7; i++){
+      let a = i / 7 * Math.PI * 2 + r() * .5, px = cx, py = cy;
+      ctx.beginPath(); ctx.moveTo(px, py);
+      for (let k = 0; k < 6; k++){ a += (r() - .5) * .7; px += Math.cos(a) * (14 + r() * 16); py += Math.sin(a) * (14 + r() * 16); ctx.lineTo(px, py); }
+      ctx.strokeStyle = "rgba(0,0,0,.55)"; ctx.lineWidth = 5; ctx.stroke();
+      ctx.strokeStyle = "rgba(230,238,245,.9)"; ctx.lineWidth = 2.2; ctx.stroke();
+    }
+  } else if (d.type === "soiling" && d.cause === "bird_droppings"){
+    for (let i = 0; i < 4; i++){
+      const sx = x1 + 30 + r() * (w - 60), sy = y1 + 30 + r() * (h - 60);
+      ctx.fillStyle = "rgba(236,234,224,.92)";
+      for (let k = 0; k < 9; k++){ ctx.beginPath(); ctx.arc(sx + (r() - .5) * 34, sy + (r() - .5) * 26, 5 + r() * 11, 0, 7); ctx.fill(); }
+    }
+  } else if (d.type === "soiling"){
+    const band = d.cause === "edge_soiling_low_tilt";
+    const g = ctx.createLinearGradient(0, band ? y2 : y1, 0, band ? y1 : y2);
+    g.addColorStop(0, band ? "rgba(146,120,82,.78)" : "rgba(170,150,112,.22)"); g.addColorStop(1, band ? "rgba(146,120,82,0)" : "rgba(170,150,112,.16)");
+    ctx.fillStyle = g; ctx.fillRect(x1, y1, w, h);
+    for (let i = 0; i < 320; i++){ ctx.fillStyle = `rgba(${150 + r() * 40},${122 + r() * 30},${84 + r() * 20},${r() * .22})`; ctx.fillRect(x1 + r() * w, (band ? y2 - Math.pow(r(), 1.8) * h : y1 + r() * h), 3 + r() * 6, 2 + r() * 4); }
+  } else if (d.type === "snail_trail"){
+    for (let i = 0; i < 5; i++){
+      let px = x1 + r() * w, py = y1 + r() * h * .3; ctx.beginPath(); ctx.moveTo(px, py);
+      for (let k = 0; k < 8; k++){ px += (r() - .5) * 60; py += 20 + r() * 20; ctx.lineTo(Math.min(x2, Math.max(x1, px)), Math.min(y2, py)); }
+      ctx.strokeStyle = "rgba(4,6,10,.8)"; ctx.lineWidth = 3; ctx.stroke();
+    }
+  } else if (d.type === "discoloration"){
+    const g = ctx.createRadialGradient(cx, cy, 5, cx, cy, Math.max(w, h) * .6);
+    g.addColorStop(0, "rgba(160,120,50,.30)"); g.addColorStop(1, "rgba(160,120,50,0)"); ctx.fillStyle = g; ctx.fillRect(x1, y1, w, h);
+  } else if (d.type === "delamination"){
+    for (let i = 0; i < 7; i++){
+      const px = x1 + Math.pow(r(), 1.6) * w, py = y1 + r() * h, rad = 30 + r() * 55;
+      const g = ctx.createRadialGradient(px, py, 2, px, py, rad); g.addColorStop(0, "rgba(225,228,222,.55)"); g.addColorStop(1, "rgba(225,228,222,0)");
+      ctx.fillStyle = g; ctx.fillRect(px - rad, py - rad, rad * 2, rad * 2);
+    }
+  }
+}
+function drawBoxes(svg, rec, selected, show){
+  svg.innerHTML = "";
+  if (!show) return;
+  rec.defects.forEach((d, i) => {
+    const [x1, y1, x2, y2] = d.box, on = selected === i, dim = selected !== null && !on;
+    const col = OVHEX[d.urgency], ty = y1 - 70 < 0 ? y1 + 8 : y1 - 70;
+    const grp = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    grp.setAttribute("opacity", dim ? ".62" : "1");
+    grp.innerHTML = `<rect x="${x1}" y="${y1}" width="${x2 - x1}" height="${y2 - y1}" fill="none" stroke="rgba(0,0,0,.55)" stroke-width="${on ? 12 : 9}"/>
+      <rect x="${x1}" y="${y1}" width="${x2 - x1}" height="${y2 - y1}" fill="none" stroke="${col}" stroke-width="${on ? 7 : 4}"/>
+      <rect x="${x1}" y="${ty}" width="68" height="64" fill="${col}"/>
+      <text x="${x1 + 34}" y="${ty + 46}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="42" font-weight="500" fill="#10161D">${i + 1}</text>`;
+    svg.appendChild(grp);
+  });
+}
+
+/* ---- findings panel ----------------------------------------------------- */
+function el(tag, cls, text){ const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+function chip(p, text, lg){ const c = el("span", `chip p-${p}${lg ? " chip-lg" : ""}`, text); return c; }
+
+function renderFindings(root, rec, state, onSelect){
+  root.innerHTML = "";
+  const pri = priorityOf(rec);
+  const v = el("section", "verdict");
+  v.appendChild(el("p", "eyebrow", `Inspection ${rec.id} · ${rec.when}`));
+  const row = el("div", "verdict-row");
+  row.appendChild(el("h2", null, VERDICT[rec.status]));
+  row.appendChild(chip(pri, pri === "none" ? "No action" : `${PLABEL[pri]} priority`, true));
+  v.appendChild(row);
+  v.appendChild(el("p", "summary", rec.summary));
+  root.appendChild(v);
+
+  if (!rec.defects.length){
+    root.appendChild(el("div", "empty", rec.status === "retake_required"
+      ? "Nothing can be judged from this image. Improve the lighting or move closer to the module, then capture again."
+      : "No regions were marked. Keep this record as a clean baseline for the module."));
+    return;
+  }
+
+  const list = el("ol", "defects");
+  list.setAttribute("aria-label", "Marked regions");
+  rec.defects.forEach((d, i) => {
+    const li = el("li"), b = el("button", "defect");
+    b.setAttribute("aria-pressed", String(state.selected === i));
+    const idx = el("span", "idx", String(i + 1)); idx.style.background = OVHEX[d.urgency];
+    const mid = el("span"); mid.appendChild(el("span", "name", TYPE[d.type]));
+    mid.appendChild(el("span", "cause-line", KB[d.cause].title));
+    b.append(idx, mid, chip(d.urgency, PLABEL[d.urgency]));
+    b.addEventListener("click", () => onSelect(state.selected === i ? null : i));
+    li.appendChild(b); list.appendChild(li);
+  });
+  root.appendChild(list);
+
+  const i = state.selected ?? 0, d = rec.defects[i], k = KB[d.cause];
+  const c = el("section", "cause");
+  c.setAttribute("aria-live", "polite");
+  c.appendChild(el("p", "kicker", `Region ${i + 1} · ${TYPE[d.type]} · probable cause`));
+  c.appendChild(el("h3", null, k.title));
+  const chips = el("div", "chips");
+  chips.append(chip(d.urgency, `${PLABEL[d.urgency]} urgency`), chip("none", `${d.confidence} confidence`));
+  c.appendChild(chips);
+  const dl = el("dl");
+  const add = (t, node) => { const w = el("div"); w.appendChild(el("dt", null, t)); const dd = el("dd"); dd.appendChild(node); w.appendChild(dd); dl.appendChild(w); };
+  add("Why we think so", el("span", "evidence", d.evidence));
+  add("About this cause", document.createTextNode(k.explanation));
+  const ul = el("ul"); k.verify.forEach(x => ul.appendChild(el("li", null, x))); add("How to confirm", ul);
+  add("What to do", document.createTextNode(k.action));
+  c.appendChild(dl);
+  c.appendChild(el("p", "note", "Inferred from visible evidence in one photograph. Confirm on site before replacing equipment."));
+  root.appendChild(c);
+}
+
+/* ---- screens ------------------------------------------------------------ */
+function mountRecord(prefix, rec, state){
+  const stage = document.getElementById(`stage-${prefix}`), svg = stage.querySelector("svg"), toggle = document.getElementById(`regions-${prefix}`);
+  drawModule(stage.querySelector("canvas"), rec);
+  const paint = () => {
+    drawBoxes(svg, rec, state.selected, toggle.checked);
+    renderFindings(document.getElementById(`findings-${prefix}`), rec, state, sel => { state.selected = sel; paint(); });
+  };
+  toggle.onchange = paint;
+  document.getElementById(`meta-${prefix}`).textContent = `1600 × 1200 · ${rec.kb}`;
+  paint();
+}
+
+const views = {inspect:document.getElementById("view-inspect"), history:document.getElementById("view-history"), record:document.getElementById("view-record")};
+function show(name){
+  for (const [k, v] of Object.entries(views)) v.hidden = k !== name;
+  document.getElementById("nav-inspect").toggleAttribute("aria-current", name === "inspect");
+  document.getElementById("nav-history").toggleAttribute("aria-current", name !== "inspect");
+  if (name === "inspect") document.getElementById("nav-inspect").setAttribute("aria-current", "page");
+  else document.getElementById("nav-history").setAttribute("aria-current", "page");
+  window.scrollTo(0, 0);
+}
+document.querySelectorAll(".nav").forEach(n => n.addEventListener("click", () => show(n.dataset.view)));
+
+const inspectState = {selected:0};
+mountRecord("inspect", RECORDS[0], inspectState);
+
+const capture = document.getElementById("capture"), capLabel = document.getElementById("capture-label"), stageI = document.getElementById("stage-inspect"), badge = document.getElementById("badge-inspect");
+capture.addEventListener("click", () => {
+  capture.disabled = true; stageI.classList.add("busy"); badge.textContent = "Capturing"; capLabel.textContent = "Capturing…";
+  setTimeout(() => { badge.textContent = "Analyzing"; capLabel.textContent = "Analyzing…"; }, 700);
+  setTimeout(() => {
+    capture.disabled = false; stageI.classList.remove("busy"); badge.textContent = "Captured still"; capLabel.textContent = "Capture and analyze";
+    inspectState.selected = 0; mountRecord("inspect", RECORDS[0], inspectState);
+  }, 2100);
+});
+
+const FILTERS = [["all","All"],["urgent","Urgent"],["high","High"],["medium","Medium"],["low","Low"],["none","No action"]];
+let activeFilter = "all";
+const filtersEl = document.getElementById("filters");
+FILTERS.forEach(([key, label]) => {
+  const b = el("button", "filter", label); b.id = `filter-${key}`; b.setAttribute("aria-pressed", String(key === activeFilter));
+  b.addEventListener("click", () => { activeFilter = key; filtersEl.querySelectorAll(".filter").forEach(f => f.setAttribute("aria-pressed", String(f === b))); renderRows(); });
+  filtersEl.appendChild(b);
+});
+function renderRows(){
+  const rows = document.getElementById("rows"); rows.innerHTML = "";
+  const list = RECORDS.filter(r => activeFilter === "all" || priorityOf(r) === activeFilter);
+  document.getElementById("history-count").textContent = `${list.length} of ${RECORDS.length} inspections`;
+  if (!list.length){ rows.appendChild(el("div", "nores", "No inspections at this priority.")); return; }
+  for (const rec of list){
+    const pri = priorityOf(rec), b = el("button", "row");
+    const t = el("span", "c-thumb"), cv = el("canvas", "thumb"); cv.width = 208; cv.height = 156; t.appendChild(cv); drawModule(cv, rec);
+    const id = el("span", "c-id"); id.appendChild(el("span", "id", rec.id)); id.appendChild(el("span", "when", rec.when));
+    const n = rec.defects.length;
+    b.append(t, id, el("span", "c-verdict", VERDICT[rec.status]), el("span", "c-count count", n ? `${n} region${n > 1 ? "s" : ""}` : "—"));
+    const p = el("span", "c-pri"); p.appendChild(chip(pri, PLABEL[pri])); b.appendChild(p);
+    b.addEventListener("click", () => openRecord(rec));
+    rows.appendChild(b);
+  }
+}
+renderRows();
+
+function openRecord(rec){
+  document.getElementById("h-record").textContent = `Inspection ${rec.id}`;
+  document.getElementById("record-when").textContent = rec.when;
+  mountRecord("record", rec, {selected: rec.defects.length ? 0 : null});
+  show("record");
+}
+document.getElementById("back").addEventListener("click", () => show("history"));
+document.getElementById("print").addEventListener("click", () => window.print());
+</script>
