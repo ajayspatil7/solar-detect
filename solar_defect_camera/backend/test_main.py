@@ -248,3 +248,76 @@ def test_delete_only_from_this_computer(monkeypatch):
     remote = TestClient(from_lan_device)
     assert remote.delete("/api/records/000004").status_code == 403
     assert deleted == ["000003"]
+
+
+def image_bytes(fmt: str, width: int, height: int, colour=(74, 90, 104)) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), colour).save(buffer, fmt)
+    return buffer.getvalue()
+
+
+def test_upload_png_is_fitted_to_uxga_without_cropping(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+    response = client.post("/api/upload", content=image_bytes("PNG", 1000, 1000, (255, 255, 255)),
+                           headers={"Content-Type": "image/png"})
+    body = response.json()
+    assert response.status_code == 200
+    assert body["source"] == "upload"
+    assert body["record_id"] is None
+    assert body["result"]["image_width"] == 1600
+    assert body["result"]["image_height"] == 1200
+    assert body["result"]["inspected_at"]
+
+    stored = client.get(f"/api/captures/{body['capture']}.jpg")
+    assert stored.status_code == 200
+    with Image.open(io.BytesIO(stored.content)) as image:
+        assert image.format == "JPEG"
+        assert image.size == (1600, 1200)
+        rgb = image.convert("RGB")
+        # A square image fills the full height, centred: white inside, padding at the sides.
+        assert min(rgb.getpixel((800, 5))) > 240
+        assert min(rgb.getpixel((800, 1194))) > 240
+        assert max(rgb.getpixel((20, 600))) < 60
+
+
+def test_upload_small_jpeg_is_scaled_up(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+    response = client.post("/api/upload", content=image_bytes("JPEG", 640, 480),
+                           headers={"Content-Type": "image/jpeg"})
+    assert response.status_code == 200
+    assert response.json()["result"]["image_width"] == 1600
+
+
+def test_upload_rejects_unsupported_type():
+    response = client.post("/api/upload", content=b"GIF89a", headers={"Content-Type": "image/gif"})
+    assert response.status_code == 415
+    assert response.json()["error"]["code"] == "unsupported_media_type"
+
+
+def test_upload_rejects_undecodable_image():
+    response = client.post("/api/upload", content=b"definitely not a png",
+                           headers={"Content-Type": "image/png"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_image"
+
+
+def test_upload_rejects_oversized_file(monkeypatch):
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 1000)
+    response = client.post("/api/upload", content=image_bytes("PNG", 400, 300),
+                           headers={"Content-Type": "image/png"})
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "image_too_large"
+
+
+def test_upload_refused_while_another_analysis_runs(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+
+    class Locked:
+        def locked(self):
+            return True
+
+    monkeypatch.setattr(main, "analysis_lock", Locked())
+    response = client.post("/api/upload", content=image_bytes("PNG", 400, 300),
+                           headers={"Content-Type": "image/png"})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "busy"

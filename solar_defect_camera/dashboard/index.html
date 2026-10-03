@@ -59,6 +59,11 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
               <span id="capture-label">Capture and analyze</span>
             </button>
+            <button class="btn" id="upload" type="button">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
+              Upload image
+            </button>
+            <input type="file" id="upload-file" accept="image/jpeg,image/png,image/webp" hidden>
             <button class="btn" id="back-live" type="button" hidden>Live view</button>
             <label class="toggle"><input type="checkbox" id="regions-inspect" checked> Show regions</label>
             <span class="meta mono" id="meta-inspect"></span>

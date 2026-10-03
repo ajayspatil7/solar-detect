@@ -96,9 +96,10 @@ function renderStatus() {
   row("Analysis", analysis.ready ? `${analysis.label} · ready` : "Not configured");
   $("find-camera").hidden = camera.reachable;
 
-  $("offline").hidden = camera.reachable;
+  $("offline").hidden = camera.reachable || state.showingStill;
   if (!camera.reachable && camera.error) $("offline-text").textContent = camera.error.message;
   $("capture").disabled = state.busy || !camera.reachable;
+  $("upload").disabled = state.busy || !analysis.ready;
   if (camera.reachable && !state.showingStill && !state.busy) startLive();
 }
 
@@ -157,8 +158,9 @@ function renderFindings(root, view, selected, onSelect) {
   const priority = result.priority || "none";
 
   const verdict = el("section", "verdict");
-  verdict.appendChild(el("p", "eyebrow",
-    view.recordId ? `Inspection ${view.recordId} · ${when(result.inspected_at)}` : `Not saved · ${when(result.inspected_at)}`));
+  const origin = view.recordId ? `Inspection ${view.recordId}`
+    : view.source === "upload" ? `Uploaded${view.fileName ? ` · ${view.fileName}` : ""} · not saved` : "Not saved";
+  verdict.appendChild(el("p", "eyebrow", `${origin} · ${when(result.inspected_at)}`));
   const heading = el("div", "verdict-row");
   heading.appendChild(el("h2", null, VERDICT[result.status] || "Result"));
   heading.appendChild(chip(priority, priority === "none" ? "No action" : `${PLABEL[priority]} priority`, true));
@@ -243,11 +245,15 @@ function renderInspectIdle() {
   card.appendChild(el("h2", null, "No inspection yet"));
   card.appendChild(el("p", "summary",
     "Frame one module in the live view, then press Capture and analyze. Each result is saved to the camera's SD card and appears in History."));
+  card.appendChild(el("p", "summary",
+    "To check an existing photo instead, press Upload image or drop a JPEG or PNG onto the view. Uploaded photos are analysed but not saved."));
   root.appendChild(card);
 }
 
-function renderProgress(stage) {
-  const steps = [["capturing", "Taking the picture"], ["analyzing", "Analysing with the vision model"], ["saving", "Saving to the camera"]];
+const CAPTURE_STEPS = [["capturing", "Taking the picture"], ["analyzing", "Analysing with the vision model"], ["saving", "Saving to the camera"]];
+const UPLOAD_STEPS = [["uploading", "Uploading the photo"], ["analyzing", "Analysing with the vision model"]];
+
+function renderProgress(stage, steps = CAPTURE_STEPS) {
   const order = steps.map(([key]) => key);
   const root = $("findings-inspect");
   root.innerHTML = "";
@@ -284,14 +290,16 @@ function paintInspect() {
   $("meta-inspect").textContent = `${modeLabel(current.result.meta)}${latency ? ` · ${(latency / 1000).toFixed(1)} s` : ""}`;
 }
 
-function showStill(url) {
+function showStill(url, badge = "Captured still") {
   state.showingStill = true;
   stopLive();
   $("live").hidden = true;
+  $("offline").hidden = true;
+  $("boxes-inspect").innerHTML = "";
   const still = $("still-inspect");
   still.hidden = false;
   still.src = url;
-  $("badge-inspect").textContent = "Captured still";
+  $("badge-inspect").textContent = badge;
   $("back-live").hidden = false;
 }
 
@@ -301,6 +309,7 @@ function showLiveView() {
   $("boxes-inspect").innerHTML = "";
   $("badge-inspect").textContent = "Live view";
   $("back-live").hidden = true;
+  $("offline").hidden = state.status?.camera?.reachable !== false;
   startLive();
 }
 
@@ -314,6 +323,7 @@ async function inspect() {
   if (state.busy) return;
   state.busy = true;
   $("capture").disabled = true;
+  $("upload").disabled = true;
   $("back-live").hidden = true;
   stopLive();  // free the Wi-Fi link for the full-resolution capture
   setProgress("Capturing…");
@@ -341,6 +351,49 @@ async function inspect() {
     state.busy = false;
     setProgress("");
     $("capture").disabled = !state.status?.camera?.reachable;
+    $("upload").disabled = !state.status?.analysis?.ready;
+  }
+}
+
+const UPLOAD_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
+async function uploadImage(file) {
+  if (state.busy || !file) return;
+  if (!UPLOAD_TYPES.includes(file.type)) {
+    renderInspectError({ message: "Choose a JPEG, PNG or WebP photo." });
+    return;
+  }
+  state.busy = true;
+  $("capture").disabled = true;
+  $("upload").disabled = true;
+  const preview = URL.createObjectURL(file);
+  showStill(preview, "Uploaded image");
+  $("back-live").hidden = true;
+  setProgress("Uploading…");
+  renderProgress("uploading", UPLOAD_STEPS);
+
+  try {
+    const request = fetch("/api/upload", { method: "POST", headers: { "Content-Type": file.type }, body: file });
+    setProgress("Analysing…");
+    renderProgress("analyzing", UPLOAD_STEPS);
+    const response = await request;
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw body.error || { message: "The photo could not be analysed." };
+    // Show the service's 1600 × 1200 copy so the regions line up exactly.
+    showStill(`/api/captures/${body.capture}.jpg`, "Uploaded image");
+    state.current = { result: body.result, recordId: null, source: "upload", fileName: file.name };
+    state.selected = body.result.defects.length ? 0 : null;
+    paintInspect();
+  } catch (error) {
+    renderInspectError(error?.message ? error
+      : { message: "Lost contact with the analysis service. Check the launcher window is still open." });
+  } finally {
+    URL.revokeObjectURL(preview);
+    state.busy = false;
+    setProgress("");
+    $("back-live").hidden = false;
+    $("capture").disabled = !state.status?.camera?.reachable;
+    $("upload").disabled = !state.status?.analysis?.ready;
   }
 }
 
@@ -371,6 +424,22 @@ function handleStage(event) {
 }
 
 $("capture").addEventListener("click", inspect);
+$("upload").addEventListener("click", () => $("upload-file").click());
+$("upload-file").addEventListener("change", (event) => {
+  uploadImage(event.target.files[0]);
+  event.target.value = "";  // choosing the same file again still triggers
+});
+$("stage-inspect").addEventListener("dragover", (event) => {
+  if (state.busy) return;
+  event.preventDefault();
+  $("stage-inspect").classList.add("dropping");
+});
+$("stage-inspect").addEventListener("dragleave", () => $("stage-inspect").classList.remove("dropping"));
+$("stage-inspect").addEventListener("drop", (event) => {
+  event.preventDefault();
+  $("stage-inspect").classList.remove("dropping");
+  uploadImage(event.dataTransfer.files[0]);
+});
 $("back-live").addEventListener("click", () => {
   showLiveView();
   if (state.current) paintInspect();

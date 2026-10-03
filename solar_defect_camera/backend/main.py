@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
@@ -30,6 +30,9 @@ SERVICE_VERSION = "3.3.0-phase6"
 EXPECTED_WIDTH = 1600
 EXPECTED_HEIGHT = 1200
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+UPLOAD_TYPES = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}
+UPLOAD_PADDING = (16, 18, 22)
 MAX_DEFECTS = 8
 NORMALIZED_COORDINATE_MAX = 1000
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -224,6 +227,27 @@ def validate_jpeg(image_bytes: bytes) -> tuple[int, int]:
             f"received {width} × {height}."
         )
     return width, height
+
+
+def fit_upload_to_capture(image_bytes: bytes, expected_format: str) -> bytes:
+    """Turn an uploaded photo into the same 1600 × 1200 JPEG a camera capture
+    produces, scaled to fit and padded rather than cropped, so a defect near
+    the edge is never cut off and everything downstream stays unchanged."""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            if image.format != expected_format:
+                raise ValueError("The file's contents don't match its image type.")
+            image = ImageOps.exif_transpose(image).convert("RGB")
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("The uploaded image could not be decoded.") from exc
+    scale = min(EXPECTED_WIDTH / image.width, EXPECTED_HEIGHT / image.height)
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    canvas = Image.new("RGB", (EXPECTED_WIDTH, EXPECTED_HEIGHT), UPLOAD_PADDING)
+    canvas.paste(image.resize(size, Image.LANCZOS),
+                 ((EXPECTED_WIDTH - size[0]) // 2, (EXPECTED_HEIGHT - size[1]) // 2))
+    out = io.BytesIO()
+    canvas.save(out, "JPEG", quality=90, optimize=True)
+    return out.getvalue()
 
 
 def clamp(value: int) -> int:
@@ -665,6 +689,35 @@ async def api_inspect():
                         "record_id": record_id, "save_error": save_error})
 
     return StreamingResponse(stages(), media_type="application/x-ndjson")
+
+
+@app.post("/api/upload")
+async def api_upload(request: Request):
+    """Analyse a photo uploaded from this computer instead of a camera capture.
+    The camera is not involved, so the result is shown but not saved."""
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type not in UPLOAD_TYPES:
+        return error_response(415, "unsupported_media_type", "Upload a JPEG, PNG or WebP image.", False)
+    image_bytes = await request.body()
+    if not image_bytes:
+        return error_response(400, "invalid_image", "The uploaded file is empty.", False)
+    if len(image_bytes) > MAX_UPLOAD_BYTES:
+        return error_response(413, "image_too_large",
+                              f"The image is larger than the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.",
+                              False)
+    if analysis_lock.locked():
+        return error_response(409, "busy", "An inspection is already running. Wait for it to finish.", True)
+    try:
+        fitted = await run_in_threadpool(fit_upload_to_capture, image_bytes, UPLOAD_TYPES[content_type])
+    except ValueError as exc:
+        return error_response(400, "invalid_image", str(exc), False)
+    async with analysis_lock:
+        try:
+            result = await run_in_threadpool(analyze_image, fitted)
+        except AnalysisError as exc:
+            return error_response(exc.status, exc.code, exc.message, exc.retryable)
+    result["inspected_at"] = utc_now()
+    return {"source": "upload", "capture": remember_capture(fitted), "result": result, "record_id": None}
 
 
 @app.get("/api/captures/{token}.jpg")
