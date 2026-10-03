@@ -1,14 +1,50 @@
 # ESP32 Solar Panel Defect Detection — Project Checkpoint
 
-**Last updated:** 2026-09-04 (Asia/Kolkata)  
-**Current milestone:** Phase 4 smoke test passed — first real OpenAI call returned a valid, correct result  
-**Next milestone:** Phase 3.5 evaluation harness and a curated image set for detection-quality calibration
+**Last updated:** 2026-09-19 (Asia/Kolkata)  
+**Current milestone:** Phase 6 client requirements (root cause, microSD records, laptop dashboard) built and verified against the physical camera; rig now running on a breadboard, verified 2026-09-19 (6.8)  
+**Next milestone:** Verify on the client's Windows laptop over Krutika’s iPhone hotspot, resolve the slow home Wi-Fi link (6.10), then the Phase 3.5/4 evaluation harness and curated image set
 
 ## How to resume in a fresh chat
 
-Ask Codex to read this file and the project workspace before making changes.
-Continue from **Current milestone** and the Phase 3 direction below. Do not restart the
-camera hardware diagnosis unless new evidence contradicts the verified results.
+Ask the coding assistant to read this file and the project workspace before
+making changes. Start from **Current state at a glance** and **Open items**
+below. Do not restart the camera hardware diagnosis unless new evidence
+contradicts the verified results.
+
+## Current state at a glance — 2026-09-19
+
+| Item | State |
+|---|---|
+| Firmware in source | `3.3.0-phase6` (`FIRMWARE_VERSION`), OLED SDA `IO13`, SCL `IO3` (U0R), microSD in 1-bit SDMMC |
+| Firmware on the device | `3.3.0-phase6` including the pending fixes, flashed 2026-10-03 |
+| Backend | `3.3.0-phase6` (`SERVICE_VERSION`), FastAPI, dashboard served at `http://localhost:8000/` |
+| Root-cause knowledge base | `backend/root_causes.json`, 19 causes |
+| Tests | 33 passing (`backend/test_main.py` + `tools/test_wifi_windows.py`), 2026-10-02 after photo upload (6.9) |
+| Repository | `main` clean and in sync with `origin` (github.com/ajayspatil7/solar-detect) |
+| Companion doc | `PROJECT_INFO.md` — last updated 2026-09-07, predates the Phase 6 build and is stale |
+
+### Pending flash (compiled 2026-09-15, 1,170,026 bytes, no warnings)
+
+1. `max_resp_headers = 20` — without it `/capture` drops its CORS headers.
+2. "Vision model" wording on the camera's fallback page.
+3. Record timestamps prefer the service's analysis time.
+
+Remove the microSD card before flashing: its data line shares strapping pin
+GPIO2 and blocks the bootloader.
+
+### Open items
+
+1. ~~Flash the pending firmware~~ — done 2026-10-03 (6.10).
+2. ~~Finish the breadboard assembly (6.8)~~ — done and verified 2026-09-19.
+   Investigate the 19.5 s capture transfer seen afterwards.
+3. Exercise the follow-the-laptop Wi-Fi hand-over (6.4) on the Windows laptop.
+4. `WIFI_FORGET` the developer's home network before the device returns to the
+   client — NVS is not encrypted.
+5. Run root-cause analysis against the live API on a genuinely defective panel.
+6. Build the evaluation harness and curated image set (Phase 3.5 / 4).
+7. Revoke the exposed test API key and rotate the previously exposed Wi-Fi
+   password, if not already done (not verifiable from the workspace).
+8. Bring `PROJECT_INFO.md` up to date with Phase 6.
 
 ## Project goal
 
@@ -35,10 +71,10 @@ API key must remain on the backend and must never be placed in ESP32 firmware.
 - PSRAM is present and working.
 - ESP32-CAM-MB USB programmer/baseboard.
 - Mac serial port: `/dev/cu.usbserial-140`.
-- Small four-pin I2C OLED is available. Firmware support exists as of Phase 5;
-  the panel is not yet physically connected or verified.
-- No microSD card; none is required for the prototype.
-- Images currently remain in RAM/PSRAM and are not saved permanently.
+- 0.96" SSD1306 128x64 I2C OLED (`RG0.96 IC V2.0`), header soldered, verified
+  at address `0x3C` (Phase 5). SCL moved to IO3 in Phase 6.
+- 64 GB microSD card, FAT32 with MBR, verified in 1-bit SDMMC mode (6.5).
+  Analysed inspections are saved to it as records (6.6).
 
 ## Proven camera configuration
 
@@ -75,25 +111,36 @@ Hardware diagnostics previously confirmed:
 ```text
 /Users/ajaysp/Documents/Arduino/
 ├── checkpoint.md                         # This living project handoff
-├── solar_defect_camera/                  # Active Phase 3 implementation
-│   ├── solar_defect_camera.ino
-│   ├── web_ui.h                          # Embedded professional browser UI
-│   ├── web_ui_gzip.h                     # Generated compressed UI served by ESP32
-│   ├── oled.h                            # Self-contained SSD1306/SH1106 I2C driver
+├── PROJECT_INFO.md                       # Quotable project summary (stale since 09-07)
+├── Start Solar Inspector.bat             # Windows one-click launcher
+├── Start Solar Inspector.command         # macOS wrapper for the same launcher
+├── solar_defect_camera/                  # Active implementation
+│   ├── solar_defect_camera.ino           # Firmware 3.3.0-phase6
+│   ├── oled.h                            # SSD1306/SH1106 driver; SDA 13, SCL 3
 │   ├── font5x8.h                         # Generated 5x8 display font
-│   ├── backend/main.py                   # Private validation and OpenAI service
+│   ├── provisioning.h                    # NVS Wi-Fi store (5 networks), setup AP
+│   ├── records.h                         # microSD record store
+│   ├── web_ui.h / web_ui_gzip.h          # Camera's own fallback page
+│   ├── backend/main.py                   # Analysis service + dashboard API
+│   ├── backend/camera.py                 # Gateway to the camera, discovery
+│   ├── backend/root_causes.json          # 19 curated probable causes
 │   ├── backend/test_main.py              # Backend contract tests
+│   ├── dashboard/                        # index.html, app.css, app.js
 │   ├── start_backend.py                  # Local service entry point
 │   ├── requirements.txt
-│   ├── .env.local                        # Local API settings; ignored and private
+│   ├── .env.local                        # API key, CAMERA_IP; ignored and private
 │   ├── .env.local.example
-│   ├── tools/generate_web_ui.py
-│   ├── tools/generate_font.py            # Regenerates font5x8.h + preview
+│   ├── secrets.h                         # Dev-only Wi-Fi fallback; ignored
+│   ├── secrets.example.h
+│   ├── tools/launcher.py                 # Service start, discovery, Wi-Fi hand-over
+│   ├── tools/wifi_windows.py             # netsh wrapper (+ test_wifi_windows.py)
+│   ├── tools/add_wifi_usb.py             # WIFI_ADD / WIFI_LIST / WIFI_FORGET over USB
+│   ├── tools/test_records_device.py      # On-hardware record store test
+│   ├── tools/sd_probe/                   # Standalone SD card probe sketch
+│   ├── tools/generate_*.py               # Web UI, font and diagram generators
 │   ├── tools/preview_oled.py             # Renders OLED screens for design review
 │   ├── README.md
-│   ├── secrets.h                         # Local Wi-Fi credentials; ignored
-│   ├── secrets.example.h
-│   ├── design/                           # Selected visual + QA screenshots
+│   ├── design/                           # Diagrams, mockup, QA screenshots
 │   └── .gitignore
 ├── design-qa.md                          # Phase 2 visual QA record
 ├── sketch_aug23b/                        # Preserved original still server
@@ -109,8 +156,9 @@ Hardware diagnostics previously confirmed:
 ```
 
 The original experiments are preserved and were not overwritten. The active
-firmware is `solar_defect_camera/solar_defect_camera.ino`; its Phase 2 browser
-interface is kept separately in `solar_defect_camera/web_ui.h`.
+firmware is `solar_defect_camera/solar_defect_camera.ino`. The operator
+interface is now the laptop dashboard; the camera's `web_ui.h` page remains
+as a fallback.
 
 ## Phase 1 — complete
 
@@ -530,6 +578,10 @@ this work. Treat every display claim below as built-and-simulated, not measured.
 
 ### Pin selection
 
+> **Superseded 2026-09-15 (6.6):** SCL moved from GPIO 14 to **GPIO 3 (U0R)**
+> because GPIO 14 is now the microSD clock. SDA stays on GPIO 13. The Phase 5
+> notes below are kept as history; the current wiring is in 6.8.
+
 `SDA = GPIO 13`, `SCL = GPIO 14`, panel powered from `3V3` and `GND`.
 Confirmed from photographs on 2026-09-04: the ESP32-CAM's male header pins pass
 through the PCB. Only a ~1 mm stub protrudes on the top face, which is too short
@@ -704,12 +756,8 @@ Operational notes carried forward:
 
 ### Remaining for Phase 5
 
-1. Wire the panel to 3V3, GND, GPIO 13 (SDA), GPIO 14 (SCL).
-2. Flash `3.1.0-phase5` and confirm `/health` reports `oled.present` true with a
-   detected address.
-3. If the image is shifted sideways or shows noise columns, the panel is an
-   SH1106: enable `OLED_CONTROLLER_SH1106` in `oled.h` and reflash.
-4. Walk the full chain and confirm each screen, including a real analysis.
+None — all four original steps were completed by the 2026-09-05 sign-off.
+The panel proved to be an SSD1306, so the SH1106 switch was never needed.
 
 ### Housekeeping completed alongside
 
@@ -766,7 +814,27 @@ the figure was not assumed here.
 now includes usage so budget exhaustion is diagnosable rather than generic.
 Backend suite still passes, 5 tests.
 
-## Phase 6 — planned 2026-09-15: client requirements after handover
+## Handover — complete 2026-09-06 to 2026-09-08
+
+Recorded here from the commit history; it was not written up at the time.
+
+- **Wi-Fi provisioning** (`provisioning.h`): credentials live in NVS, not
+  firmware. With none stored, or none reachable, the camera raises the
+  `SOLAR-SETUP` access point with a setup page at `http://192.168.4.1`; the
+  OLED shows what to join. `POST /forget-wifi` re-enters setup mode.
+  `secrets.h` is only a developer fallback and is ignored once provisioned.
+- **One-click launcher**: `Start Solar Inspector.bat` (and a macOS `.command`)
+  creates the environment, asks for the API key once into `.env.local`,
+  starts the service, finds the camera and opens the browser.
+- **Discovery hardening**: last known `CAMERA_IP` tried first, two sweeps with
+  a widening timeout and a smaller worker pool for Windows; an iPhone hotspot's
+  `172.20.10.0/28` is recognised so only 14 addresses are probed.
+- A demo-hotspot pre-fill was added to the setup page and later removed in 6.4.
+- `PROJECT_INFO.md` added as the quotable project summary (2026-09-07).
+- Diagrams added: `design/slide-architecture.png` and
+  `design/assembly-breadboard.png` (the latter now outdated — see 6.8).
+
+## Phase 6 — built 2026-09-15: client requirements after handover
 
 The client returned the device with three requirements. Build order follows
 data dependency: root cause defines a record, storage keeps it, the dashboard
@@ -975,17 +1043,137 @@ timestamps preferring the service's analysis time so History and the record
 view agree to the second (they differed by one minute when one side used the
 camera's NTP clock).
 
+The backend's `SERVICE_VERSION` moved to `3.3.0-phase6` with this commit.
+
+### 6.8 Breadboard assembly — verified on hardware 2026-09-19
+
+**Result:** working, with **no power rails**. Six wires, each in the free
+hole beside a camera pin (column `a` beside the right header, `j` beside the
+left): MB 5V → `5V`, MB GND → `GND` (right), OLED SDA → `IO13`, OLED VDD →
+`3V3`, OLED GND → left-header `GND` (3 rows above 3V3), OLED SCK → `U0R`
+(5 rows above 3V3). The camera sits with 5V/3V3 at about row 22.
+
+Verified after power-up: `/health` camera, Wi-Fi (192.168.1.13), OLED
+`present:true` at `0x3c`, SD present (60,871 MB free, 1 record), firmware
+`3.3.0-phase6`; OLED shows `READY` / `AWAITING CAPTURE`. One `/capture`
+returned a valid 1600x1200 JPEG (73,236 B, acquisition 453 ms) and uptime
+kept rising, so no brownout on breadboard power.
+
+How it was found: the first attempt, powered through the rails, never
+booted (not on the LAN, no `SOLAR-SETUP` AP). Stacked on the MB, the serial
+log showed a normal boot, clearing the camera, SD and firmware. Powering the
+camera straight from the MB wires on the breadboard also booted, isolating
+the fault to the rail path (split rail or wrong rail column — not pinned
+down, since the rails are no longer used). One false negative came from the
+MB's USB cable not being connected to the Mac.
+
+Open: that capture's transfer took **19.5 s** at −66 dBm, against 0.53–1.21 s
+in Phase 5 at similar signal. Not yet investigated — check Wi-Fi conditions
+and antenna orientation before the next demo.
+
+Original plan, kept for reference:
+
+The loose jumper-on-pin rig is moving onto a solderless breadboard with
+male-to-male jumpers. No firmware change: the wiring matches the Phase 6 pins.
+`design/assembly-breadboard.png` (2026-09-08) is **outdated** — it wires SCK to
+IO14, which is now the microSD clock. Do not follow it.
+
+- Camera straddles the centre channel with its pins in rows **b** and **i**
+  (headers 0.9 in apart); only row **a** and row **j** stay reachable, one hole
+  per pin.
+- Left header (row b / a), from the 5V end: `5V GND IO12 IO13 IO15 IO14 IO2 IO4`.
+  Right header (row i / j), from the 3V3 end: `3V3 IO16 IO0 GND VCC U0R U0T GND`.
+- Eight wires: MB `5V` → top + rail; MB `GND` → top − rail; + rail → CAM `5V`;
+  − rail → CAM `GND`; OLED `GND` → top − rail; OLED `VDD` → CAM `3V3`;
+  OLED `SCK` → CAM `U0R` (IO3); OLED `SDA` → CAM `IO13`.
+- The OLED header was soldered with its long pins on the display side, so the
+  module cannot plug into the breadboard screen-up. It sits beside the board
+  (taped down), and its four wires need a female end on the OLED pin and a
+  male end in the board: male-to-female jumpers, or a female-to-female
+  jumper chained to a male-to-male. Re-soldering the header was rejected.
+- Nothing connects to IO14, IO15 or IO2 (SD card), IO12 (strapping) or IO0.
+- The MB stays on USB as the 5V source; flashing and `WIFI_*` serial commands
+  still need the camera re-seated on the MB with the SD card removed.
+- Acceptance: `/health` shows camera, Wi-Fi, `oled.present:true` at `0x3c`,
+  `sd.present:true`; one dashboard inspection saves a record.
+
+### 6.9 Photo upload — built and verified 2026-10-02 (not yet committed)
+
+The dashboard can analyse an existing photo instead of a camera capture.
+
+- `POST /api/upload` takes a raw JPEG, PNG or WebP body (`Content-Type`
+  decides the expected format; contents must match), up to 15 MB. The photo is
+  EXIF-rotated, scaled to fit and **padded, never cropped**, onto a 1600 × 1200
+  dark canvas (`fit_upload_to_capture`), so `analyze_image` and the 1600 × 1200
+  contract are untouched. Refused with 409 while another analysis runs.
+- **Uploads are not saved.** The SD record store writes the camera's own held
+  capture (6.6), so storing uploads would need firmware work. The fitted image
+  is held in the same 3-item memory cache as captures; the result reads
+  "Uploaded · <file> · not saved". The OLED is not driven by uploads.
+- Dashboard: "Upload image" button beside Capture, plus drag-and-drop onto the
+  view. Works with the camera offline (needs analysis ready only). Two-step
+  progress (uploading, analysing).
+- Tests: 6 new (fit without cropping, upscaling, wrong type 415, undecodable
+  400, oversized 413, busy 409). Suite: 33 passing.
+
+**Real-model test, four reference photos** (`report/screenshots-2026-10-02/
+solar1–4`), first via `analyze_image` directly, then through the Upload button
+in Chrome. Boxes were drawn back onto the images and land on the visible
+defects:
+
+| Photo | Verdict | Regions |
+|---|---|---|
+| solar1 — burn marks on a busbar | Defects found, high | 2 burn marks |
+| solar2 — cell cracks | Defects found | 1–2 surface cracks |
+| solar3 — cracks + brown streak | Defects found, high | cracks; streak flagged as discoloration in 1 of 3 runs |
+| solar4 — whole rooftop array | No visible defects | 0 |
+
+About 3,500–4,600 tokens per photo (high-res originals upscaled to UXGA).
+**Run-to-run variation is real:** across repeat runs the region count, severity
+and root cause changed (e.g. solar1's cause alternated between "Localised
+overheating" and "not determinable"). The verdict was stable on all four.
+This is direct input for the Phase 3.5 evaluation harness.
+
+Known UI quirk: the header status panel is a `<details>` and only closes from
+its own header, not by clicking elsewhere.
+
+### 6.10 Live view down to ~1 fps on the home Wi-Fi — 2026-10-03, unresolved
+
+Reported as "FPS 0.9" on the camera's own page. Measured from the Mac with no
+browser attached: the QVGA stream ran at **1.6 fps** (3.8 KB frames, 49 kbit/s)
+against ~11.5 fps in Phase 1, and pings to the camera rose to 1–12 s with up
+to 46% loss while it streamed; even idle it was sometimes 0.7–3 s. At the same
+moment the router answered in 3 ms and other LAN devices in 8–120 ms.
+
+Ruled out by measurement: software (reproduced with a bare `curl` of the
+stream; firmware unchanged), the breadboard (same on the MB), the Mac's USB
+power (same on a wall charger), router load, channel crowding (router 2.4 GHz
+on ch 1, one weak neighbour on ch 6) and Bluetooth (only a mouse). The camera
+log showed no disconnects. Remaining candidates: a damaged or detuned antenna
+(the board was pressed hard into the breadboard on 2026-09-19, when the slow
+transfers began) or local 2.4 GHz interference at the desk. Not yet tested:
+the camera near the router, and the camera on a phone hotspot beside it.
+
+A wired-only USB mode (framed serial protocol, Wi-Fi off) was started and then
+**abandoned at the owner's request** in favour of the working Wi-Fi build. Its
+firmware ran, but the host never received data at 921600 baud, though it did
+at 115200. Code was not kept in the repository. The camera was re-flashed with
+`3.3.0-phase6`, which also delivered the fixes pending since 2026-09-15
+(`max_resp_headers`, "Vision model" labels, record timestamps).
+`WIFI_LIST` after flashing: the home network and the demo phone hotspot.
+
 ## Future phases
 
-- **Phase 4:** Replace/revoke the exposed no-credit test key, run a curated real
-  image set with funded API access, measure localization quality, tune the
-  prompt/taxonomy/thresholds, and define explicit acceptance metrics.
-- **Phase 3.5:** Offline evaluation harness (`tools/evaluate.py`) that pushes a
-  folder of images through the production `/analyze` contract, plus a ground-truth
-  format and IoU scoring, and a shared-secret header on `/analyze` so nothing else
-  on the LAN can spend API credit.
-- **Phase 6:** Test against a curated set of clear, defective-looking, blurred,
-  dark, missing-panel, and partial-panel images.
+- **Phase 4:** Revoke the exposed no-credit test key if not already done, run a
+  curated real image set with funded API access, measure localization quality,
+  tune the prompt/taxonomy/thresholds and root-cause selection, and define
+  explicit acceptance metrics.
+- **Phase 3.5:** Offline evaluation harness (`tools/evaluate.py`, not yet
+  written) that pushes a folder of images through the production analysis path,
+  plus a ground-truth format and IoU scoring, and a shared-secret header on
+  `/analyze` so nothing else on the LAN can spend API credit.
+- **Curated image set:** clear, defective-looking, blurred, dark,
+  missing-panel and partial-panel images.
 - **Optional wired phase:** Benchmark USB serial at 460800 and 921600 baud using
   a framed JPEG protocol and Mac companion server, then compare it with Wi-Fi.
 
