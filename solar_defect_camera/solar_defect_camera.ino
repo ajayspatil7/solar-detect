@@ -33,7 +33,7 @@ namespace {
 
 constexpr uint16_t CONTROL_PORT = 80;
 constexpr uint16_t STREAM_PORT = 81;
-#define FIRMWARE_VERSION "3.3.0-phase6"
+#define FIRMWARE_VERSION "3.3.1-phase6"
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 10000;
 constexpr uint32_t STREAM_LOG_INTERVAL_FRAMES = 30;
@@ -1049,6 +1049,10 @@ bool connectWiFi() {
   // few seconds instead of timing out on every remembered network.
   int found = WiFi.scanNetworks();
   if (found <= 0) found = WiFi.scanNetworks();
+  // What the camera can actually hear; a saved name must match one of these exactly.
+  for (int j = 0; j < found; ++j) {
+    Serial.printf("[wifi] seen: \"%s\" ch %d %d dBm\n", WiFi.SSID(j).c_str(), static_cast<int>(WiFi.channel(j)), static_cast<int>(WiFi.RSSI(j)));
+  }
 
   struct Candidate {
     uint8_t index;

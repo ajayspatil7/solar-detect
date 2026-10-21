@@ -1162,6 +1162,68 @@ at 115200. Code was not kept in the repository. The camera was re-flashed with
 (`max_resp_headers`, "Vision model" labels, record timestamps).
 `WIFI_LIST` after flashing: the home network and the demo phone hotspot.
 
+Later on 2026-10-03: the home router's 2.4 GHz network (ch 1) was seen to
+vanish from two consecutive scans and return minutes later, while its 5 GHz
+network stayed up. Stacked on the MB on the same desk the camera still
+streamed at only 0.4 fps (pings 9–210 ms idle). This points at the router's
+2.4 GHz side. A router restart is the next cheap test; a phone-hotspot test was
+started but not completed.
+
+### 6.11 Breadboard rig re-verified with OLED — 2026-10-12
+
+Camera on the breadboard, **5V pin in b22, 3V3 pin in i22** (rows 1–30, `a`
+bottom edge). Six wires, no rails: MB 5V socket → a22, MB GND socket → a23,
+OLED SDA → a25 (IO13), OLED VDD → j22 (3V3), OLED GND → j25 (top-row GND),
+OLED SCK → j27 (U0R). Leave a24, a26–a28 empty (IO12, SD pins).
+
+Verified in two steps: power wires only, then the camera booted and joined the
+home Wi-Fi (`192.168.1.6`, SD present). With the OLED wires added,
+`/health` reported `oled.present:true` at `0x3c` and the panel showed
+`READY / AWAITING CAPTURE`.
+
+Lessons: the OLED cannot work with the camera stacked on the MB (every pin is
+in a socket and U0R is driven by the MB's USB chip). Earlier breadboard
+"no power" attempts on 2026-10-03 had the red/black wires either one row off
+or not plugged into the MB's sockets at all.
+
+Still open: live view ~0.1 fps on the home Wi-Fi (idle pings 11–115 ms),
+consistent with 6.10.
+
+### 6.12 Slow link traced to the camera board's transmitter — 2026-10-21
+
+Measured with the camera stacked on the MB, SD card out:
+
+| Condition | Signal | Live view | 100 KB photo |
+|---|---|---|---|
+| Home router after restart (ch 1) | −64 to −72 dBm | 0.1–1.1 fps | — |
+| iPhone hotspot 1 m away (ch 6) | −27 to −44 dBm | 0.9–1.2 fps | 6.6–17 s |
+| Hotspot, TX power 11 dBm / 5 dBm | −32 dBm | 1.2 / 1.0 fps | no better |
+
+The firmware's own split for two captures on the hotspot: sensor 534 ms and
+374 ms (normal), network 14,997 ms and 8,707 ms (normal was ~500 ms in
+Phase 5). So the sensor is fine and the camera **receives** well, but its
+**transmit throughput is ~50–100 kbit/s on any access point, channel, power
+level or power source**. Router, channel, interference at that signal level,
+breadboard, USB power and firmware are all ruled out. Conclusion: a fault in
+the ESP32-CAM board's radio/antenna path, most likely physical damage around
+2026-09-19 when it was pressed into the breadboard (when slow transfers
+began). The antenna trace and antenna-select resistor look intact in photos;
+the damage is not visible.
+
+Firmware `3.3.1-phase6` (flashed, not committed): logs every network the
+camera hears at boot (`[wifi] seen: ...`). The TX-power experiment was
+reverted.
+
+Hotspot lessons for the client:
+- The iPhone hotspot's name is the phone's name (here `iPhone 16 Pro`), saved
+  with `tools/add_wifi_usb.py`. It must match exactly.
+- **An iPhone stops advertising its hotspot to new devices unless the Personal
+  Hotspot screen is open.** The camera only scans at boot, so keep that screen
+  open when powering the camera, or it falls back to another saved network.
+
+Next: replace the ESP32-CAM board (MB, OLED, SD card and wiring are fine),
+flash `3.3.1-phase6`, add the networks over USB, and re-measure.
+
 ## Future phases
 
 - **Phase 4:** Revoke the exposed no-credit test key if not already done, run a
