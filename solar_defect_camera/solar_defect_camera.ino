@@ -33,7 +33,7 @@ namespace {
 
 constexpr uint16_t CONTROL_PORT = 80;
 constexpr uint16_t STREAM_PORT = 81;
-#define FIRMWARE_VERSION "3.3.1-phase6"
+#define FIRMWARE_VERSION "3.3.2-phase6"
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 10000;
 constexpr uint32_t STREAM_LOG_INTERVAL_FRAMES = 30;
@@ -96,6 +96,7 @@ struct DisplayModel {
   char headline[22] = "STARTING";
   char detail[22] = "";
   uint8_t defects = 0;
+  bool upload = false;  // a result for a photo uploaded on the laptop, not one taken here
 };
 
 DisplayModel displayModel;
@@ -103,7 +104,7 @@ SemaphoreHandle_t displayMutex = nullptr;
 volatile bool displayDirty = true;
 
 void setDisplay(DisplayState state, const char *headline, const char *detail = "",
-                uint8_t defects = 0) {
+                uint8_t defects = 0, bool upload = false) {
   if (displayMutex != nullptr &&
       xSemaphoreTake(displayMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
     return;
@@ -112,6 +113,7 @@ void setDisplay(DisplayState state, const char *headline, const char *detail = "
   snprintf(displayModel.headline, sizeof(displayModel.headline), "%s", headline);
   snprintf(displayModel.detail, sizeof(displayModel.detail), "%s", detail);
   displayModel.defects = defects;
+  displayModel.upload = upload;
   displayDirty = true;
   if (displayMutex != nullptr) xSemaphoreGive(displayMutex);
 }
@@ -141,15 +143,24 @@ void renderDisplay() {
     const int16_t headlineY = scale == 2 ? 15 : 19;
     oled::drawText(0, headlineY, snapshot.headline, scale);
 
-    int16_t nextLineY = 36;
+    // Rows 34 and 44 leave a two-pixel gap above the footer rule at row 54.
+    int16_t nextLineY = 34;
     if (snapshot.detail[0] != '\0') {
       oled::drawText(0, nextLineY, snapshot.detail);
-      nextLineY = 46;
+      nextLineY = 44;
     }
     if (snapshot.state == DisplayState::Result) {
-      snprintf(line, sizeof(line), "%u REGION%s", snapshot.defects,
-               snapshot.defects == 1 ? "" : "S");
-      oled::drawText(0, nextLineY, line);
+      // Region count only when there is something to count, and a clear
+      // marker when the verdict is for an uploaded photo rather than this
+      // camera's own capture.
+      line[0] = '\0';
+      if (snapshot.defects > 0) {
+        snprintf(line, sizeof(line), "%u REGION%s%s", snapshot.defects,
+                 snapshot.defects == 1 ? "" : "S", snapshot.upload ? " - UPLOAD" : "");
+      } else if (snapshot.upload) {
+        snprintf(line, sizeof(line), "UPLOADED PHOTO");
+      }
+      if (line[0] != '\0') oled::drawText(0, nextLineY, line);
     }
 
     // The footer sits at y=56 so its 8-pixel cell ends exactly on row 63.
@@ -397,12 +408,17 @@ esp_err_t statusHandler(httpd_req_t *request) {
   } else if (strcmp(state, "capturing") == 0) {
     setDisplay(DisplayState::Capturing, "CAPTURING", "UXGA STILL");
   } else if (strcmp(state, "analyzing") == 0) {
-    setDisplay(DisplayState::Analyzing, "ANALYZING", "UPLOADED TO MAC");
+    char source[12] = "";
+    jsonStringField(body, "source", source, sizeof(source));
+    setDisplay(DisplayState::Analyzing, "ANALYZING",
+               strcmp(source, "upload") == 0 ? "UPLOADED PHOTO" : "VISION MODEL");
   } else if (strcmp(state, "result") == 0) {
     char status[28] = "";
     char severity[12] = "";
+    char source[12] = "";
     jsonStringField(body, "status", status, sizeof(status));
     jsonStringField(body, "severity", severity, sizeof(severity));
+    jsonStringField(body, "source", source, sizeof(source));
     const long defects = jsonNumberField(body, "defects", 0);
     char detail[22] = "";
     if (severity[0] != '\0') {
@@ -411,9 +427,12 @@ esp_err_t statusHandler(httpd_req_t *request) {
       snprintf(detail, sizeof(detail), "NO VISIBLE DEFECT");
     } else if (strcmp(status, "retake_required") == 0) {
       snprintf(detail, sizeof(detail), "IMAGE UNUSABLE");
+    } else if (strcmp(status, "uncertain") == 0) {
+      snprintf(detail, sizeof(detail), "CHECK ON SITE");
     }
     setDisplay(DisplayState::Result, headlineForStatus(status), detail,
-               static_cast<uint8_t>(defects < 0 ? 0 : (defects > 255 ? 255 : defects)));
+               static_cast<uint8_t>(defects < 0 ? 0 : (defects > 255 ? 255 : defects)),
+               strcmp(source, "upload") == 0);
   } else if (strcmp(state, "error") == 0) {
     char message[22] = "";
     jsonStringField(body, "message", message, sizeof(message));

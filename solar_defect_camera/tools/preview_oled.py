@@ -23,23 +23,34 @@ OUTPUT = PROJECT / "design" / "oled-screens.png"
 WIDTH, HEIGHT = 128, 64
 FONT_WIDTH, FONT_HEIGHT = 5, 8
 SCALE = 4
-IP = "192.168.1.9"
+IP = "172.20.10.3"
 RSSI = "-68"
 
-# state, headline, detail, defect count
+# label, headline, detail, defect count (None = not a result), upload, footer
+# footer: "wifi" = address + signal, "setup" = access point address, "none" = NO WIFI
 SCREENS = [
-    ("Boot", "STARTING", "CAMERA INIT", None),
-    ("Wi-Fi", "WIFI", "CONNECTING", None),
-    ("Ready", "READY", "AWAITING CAPTURE", None),
-    ("Capturing", "CAPTURING", "UXGA STILL", None),
-    ("Captured", "CAPTURED", "62 KB IN 486 MS", None),
-    ("Analyzing", "ANALYZING", "UPLOADED TO MAC", None),
-    ("Defect found", "DEFECT", "SEVERITY MEDIUM", 2),
-    ("Panel clear", "CLEAR", "NO VISIBLE DEFECT", 0),
-    ("Uncertain", "UNCERTAIN", "", 1),
-    ("Retake", "RETAKE", "IMAGE UNUSABLE", 0),
-    ("Error", "ERROR", "ANALYSIS TIMEOUT", None),
-    ("Camera fail", "CAMERA FAIL", "CHECK RIBBON", None),
+    ("Boot", "STARTING", "CAMERA INIT", None, False, "none"),
+    ("Boot, one replug from setup", "STARTING", "REPLUG FOR SETUP", None, False, "none"),
+    ("Camera fault", "CAMERA FAIL", "CHECK RIBBON", None, False, "none"),
+    ("Joining Wi-Fi", "WIFI", "CONNECTING", None, False, "none"),
+    ("Wi-Fi lost", "WIFI LOST", "RECONNECTING", None, False, "none"),
+    ("Setup mode", "SETUP", "JOIN SOLAR-SETUP", None, False, "setup"),
+    ("Ready", "READY", "AWAITING CAPTURE", None, False, "wifi"),
+    ("Ready, no SD card", "READY", "NO SD - NOT SAVING", None, False, "wifi"),
+    ("Capturing", "CAPTURING", "UXGA STILL", None, False, "wifi"),
+    ("Captured", "CAPTURED", "98 KB IN 486 MS", None, False, "wifi"),
+    ("Camera busy", "CAMERA BUSY", "RETRY CAPTURE", None, False, "wifi"),
+    ("Analysing capture", "ANALYZING", "VISION MODEL", None, False, "wifi"),
+    ("Analysing upload", "ANALYZING", "UPLOADED PHOTO", None, True, "wifi"),
+    ("Defect (capture)", "DEFECT", "SEVERITY MEDIUM", 2, False, "wifi"),
+    ("Defect (upload)", "DEFECT", "SEVERITY HIGH", 2, True, "wifi"),
+    ("Clear (capture)", "CLEAR", "NO VISIBLE DEFECT", 0, False, "wifi"),
+    ("Clear (upload)", "CLEAR", "NO VISIBLE DEFECT", 0, True, "wifi"),
+    ("Uncertain", "UNCERTAIN", "CHECK ON SITE", 0, False, "wifi"),
+    ("Uncertain with region", "UNCERTAIN", "SEVERITY LOW", 1, False, "wifi"),
+    ("Retake (capture)", "RETAKE", "IMAGE UNUSABLE", 0, False, "wifi"),
+    ("Retake (upload)", "RETAKE", "IMAGE UNUSABLE", 0, True, "wifi"),
+    ("Analysis failed", "ERROR", "ANALYSIS FAILED", None, False, "wifi"),
 ]
 
 
@@ -81,7 +92,8 @@ class Panel:
             self.set_pixel(x, y)
 
 
-def render(headline: str, detail: str, defects: int | None, glyphs) -> Panel:
+def render(headline: str, detail: str, defects: int | None, upload: bool, footer: str, glyphs) -> Panel:
+    """Mirrors renderDisplay() in solar_defect_camera.ino for a 128x64 panel."""
     panel = Panel()
     panel.text(0, 0, "SOLAR INSPECTOR", glyphs)
     panel.hline(9)
@@ -89,29 +101,42 @@ def render(headline: str, detail: str, defects: int | None, glyphs) -> Panel:
     scale = 2 if len(headline) <= 10 else 1
     panel.text(0, 15 if scale == 2 else 19, headline, glyphs, scale)
 
-    next_y = 36
+    next_y = 34
     if detail:
         panel.text(0, next_y, detail, glyphs)
-        next_y = 46
-    if defects is not None:
-        panel.text(0, next_y, f"{defects} REGION{'' if defects == 1 else 'S'}", glyphs)
+        next_y = 44
+    if defects is not None:  # a result screen
+        line = ""
+        if defects > 0:
+            line = f"{defects} REGION{'' if defects == 1 else 'S'}{' - UPLOAD' if upload else ''}"
+        elif upload:
+            line = "UPLOADED PHOTO"
+        if line:
+            panel.text(0, next_y, line, glyphs)
 
     panel.hline(54)
-    panel.text(0, 56, IP, glyphs)
-    panel.text(WIDTH - 24, 56, RSSI, glyphs)
+    if footer == "setup":
+        panel.text(0, 56, "192.168.4.1", glyphs)
+    elif footer == "wifi":
+        panel.text(0, 56, IP, glyphs)
+        panel.text(WIDTH - 24, 56, RSSI, glyphs)
+    else:
+        panel.text(0, 56, "NO WIFI", glyphs)
     return panel
 
 
 def main() -> None:
     glyphs = load_font()
-    columns = 3
+    columns = 4
     rows = (len(SCREENS) + columns - 1) // columns
     cell_w, cell_h = WIDTH * SCALE + 24, HEIGHT * SCALE + 44
     image = Image.new("RGB", (columns * cell_w, rows * cell_h), (26, 26, 30))
     draw = ImageDraw.Draw(image)
 
-    for index, (label, headline, detail, defects) in enumerate(SCREENS):
-        panel = render(headline, detail, defects, glyphs)
+    for index, (label, headline, detail, defects, upload, footer) in enumerate(SCREENS):
+        for text in (headline, detail):
+            assert len(text) <= 21, f"{label}: '{text}' is wider than the 21-character panel"
+        panel = render(headline, detail, defects, upload, footer, glyphs)
         ox = (index % columns) * cell_w + 12
         oy = (index // columns) * cell_h + 32
         draw.rectangle([ox - 2, oy - 2, ox + WIDTH * SCALE + 1, oy + HEIGHT * SCALE + 1],

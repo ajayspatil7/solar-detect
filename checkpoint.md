@@ -1224,6 +1224,28 @@ Hotspot lessons for the client:
 Next: replace the ESP32-CAM board (MB, OLED, SD card and wiring are fine),
 flash `3.3.1-phase6`, add the networks over USB, and re-measure.
 
+### 6.13 OLED follows uploads; result screens tidied — 2026-10-21
+
+Bug: after **Upload image** the OLED kept the previous camera capture's verdict
+(e.g. RETAKE for a dark desk shot) while the dashboard said "no defects",
+because `/api/upload` never updated the OLED. Fixed in the backend:
+uploads now send `analyzing` then `result` (or `error` / ANALYSIS FAILED),
+tagged `"source": "upload"`, through a single background worker so updates
+stay in order and an upload never waits on an unplugged camera. 3 new tests;
+suite 36 passing. **Works on the firmware already on the device.**
+
+Firmware **`3.3.2-phase6` — in the repository, NOT yet flashed** (device
+runs `3.3.1-phase6`; flash next time the camera is stacked on the MB):
+region count only when non-zero; upload results marked ("UPLOADED PHOTO" or
+"N REGIONS - UPLOAD"); UNCERTAIN gets "CHECK ON SITE"; analysing says
+"VISION MODEL" or "UPLOADED PHOTO" instead of "UPLOADED TO MAC"; text lines
+moved to rows 34/44 so the third line no longer touches the footer rule.
+`tools/preview_oled.py` now renders all 22 screens to `design/oled-screens.png`
+and checks every line fits the 21-character panel.
+
+Until it is flashed, uploads show "UPLOADED TO MAC" while analysing and
+"0 REGIONS" under CLEAR/RETAKE; verdicts are correct either way.
+
 ## Future phases
 
 - **Phase 4:** Revoke the exposed no-credit test key if not already done, run a
