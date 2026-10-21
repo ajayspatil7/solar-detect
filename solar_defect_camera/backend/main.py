@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -604,6 +605,20 @@ def remember_capture(image_bytes: bytes) -> str:
     return token
 
 
+# One worker keeps OLED updates in order. They run in the background because an
+# upload must not wait on a camera that may be unplugged (uploads work without it).
+oled_updates = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oled")
+
+
+def notify_oled(payload: dict) -> None:
+    def send():
+        try:
+            camera.show_status(payload)
+        except Exception:
+            pass  # best effort, like every OLED update
+    oled_updates.submit(send)
+
+
 def top_severity(defects: list[dict]) -> str:
     order = {"low": 0, "medium": 1, "high": 2}
     return max((d["severity"] for d in defects), key=order.get, default="")
@@ -711,12 +726,18 @@ async def api_upload(request: Request):
         fitted = await run_in_threadpool(fit_upload_to_capture, image_bytes, UPLOAD_TYPES[content_type])
     except ValueError as exc:
         return error_response(400, "invalid_image", str(exc), False)
+    # Mirror the upload on the camera's OLED too; otherwise it keeps showing
+    # the verdict of the last capture, which reads as this photo's result.
+    notify_oled({"state": "analyzing", "source": "upload"})
     async with analysis_lock:
         try:
             result = await run_in_threadpool(analyze_image, fitted)
         except AnalysisError as exc:
+            notify_oled({"state": "error", "message": "ANALYSIS FAILED"})
             return error_response(exc.status, exc.code, exc.message, exc.retryable)
     result["inspected_at"] = utc_now()
+    notify_oled({"state": "result", "source": "upload", "status": result["status"],
+                 "defects": len(result["defects"]), "severity": top_severity(result["defects"])})
     return {"source": "upload", "capture": remember_capture(fitted), "result": result, "record_id": None}
 
 

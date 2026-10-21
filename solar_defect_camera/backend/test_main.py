@@ -321,3 +321,43 @@ def test_upload_refused_while_another_analysis_runs(monkeypatch):
                            headers={"Content-Type": "image/png"})
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "busy"
+
+
+def flush_oled():
+    main.oled_updates.submit(lambda: None).result(timeout=5)
+
+
+def test_upload_mirrors_progress_and_result_on_the_oled(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+    shown = []
+    monkeypatch.setattr(camera_module, "show_status", shown.append)
+    response = client.post("/api/upload", content=image_bytes("PNG", 800, 600), headers={"Content-Type": "image/png"})
+    assert response.status_code == 200
+    flush_oled()
+    assert shown[0] == {"state": "analyzing", "source": "upload"}
+    assert shown[-1]["state"] == "result" and shown[-1]["source"] == "upload"
+    assert shown[-1]["status"] == "defect_suspected" and shown[-1]["defects"] == 2
+    assert shown[-1]["severity"] in ("low", "medium", "high")
+
+
+def test_failed_upload_analysis_shows_an_error_on_the_oled(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "openai")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    shown = []
+    monkeypatch.setattr(camera_module, "show_status", shown.append)
+    response = client.post("/api/upload", content=image_bytes("PNG", 800, 600), headers={"Content-Type": "image/png"})
+    assert response.status_code == 503
+    flush_oled()
+    assert shown[-1] == {"state": "error", "message": "ANALYSIS FAILED"}
+
+
+def test_oled_updates_never_hold_up_an_upload(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+    import threading, time
+    release = threading.Event()
+    monkeypatch.setattr(camera_module, "show_status", lambda payload: release.wait(5))
+    started = time.monotonic()
+    response = client.post("/api/upload", content=image_bytes("PNG", 800, 600), headers={"Content-Type": "image/png"})
+    assert response.status_code == 200 and time.monotonic() - started < 3
+    release.set()
+    flush_oled()
