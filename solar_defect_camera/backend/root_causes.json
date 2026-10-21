@@ -146,11 +146,11 @@
       "urgency": "high"
     },
     "undetermined": {
-      "title": "Cause not determinable from the image",
+      "title": "Needs an on-site check",
       "applies_to": ["*"],
-      "explanation": "The visible evidence is not specific enough to attribute a probable cause. An on-site inspection is needed.",
+      "explanation": "The photo shows the defect clearly, but the possible causes look alike in a photograph, so it cannot say which one applies.",
       "verify_with": ["On-site inspection by a qualified technician"],
-      "action": "Inspect the module in person before deciding on any action.",
+      "action": "Check the module on site to find which of the possible causes applies, then follow the guidance for that cause.",
       "urgency": null
     }
   }

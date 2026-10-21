@@ -35,6 +35,7 @@ NOT_FOUND = CameraError(
 
 _lock = threading.Lock()
 _address: str | None = None
+last_health: dict = {}  # the most recent /health, so callers can adapt to the firmware
 
 
 # ------------------------------------------------------------- discovery ----
@@ -138,10 +139,12 @@ def _camera_error(status: int, body: bytes, fallback: str) -> CameraError:
 
 
 def health() -> dict:
+    global last_health
     status, _, body = _call("GET", "/health", timeout=5)
     if status != 200:
         raise _camera_error(status, body, "The camera did not report its status.")
-    return json.loads(body)
+    last_health = json.loads(body)
+    return last_health
 
 
 def capture() -> tuple[bytes, str]:

@@ -299,6 +299,14 @@ def root_cause_for(defect: ModelDefect) -> dict:
         "action": entry["action"],
         "urgency": urgency_for(entry, defect.severity.value),
         "corrected": corrected,
+        # When no single cause fits, list the ones that can produce this kind
+        # of defect, so the reader gets a short list to check on site rather
+        # than a dead end.
+        **({"candidates": [
+            {"id": cid, "title": ROOT_CAUSES[cid]["title"], "urgency": ROOT_CAUSES[cid]["urgency"],
+             "verify_with": list(ROOT_CAUSES[cid]["verify_with"])}
+            for cid in causes_for(defect_type) if cid != UNDETERMINED
+        ]} if cause_id == UNDETERMINED else {}),
     }
 
 
@@ -619,6 +627,13 @@ def notify_oled(payload: dict) -> None:
     oled_updates.submit(send)
 
 
+def oled_has_labelled_screens() -> bool:
+    """Firmware 3.3.2 and later label the analysing screen correctly. Older
+    builds print "UPLOADED TO MAC" for it, so on those it is skipped."""
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", str(camera.last_health.get("firmware", "")))
+    return bool(match) and tuple(int(n) for n in match.groups()) >= (3, 3, 2)
+
+
 def top_severity(defects: list[dict]) -> str:
     order = {"low": 0, "medium": 1, "high": 2}
     return max((d["severity"] for d in defects), key=order.get, default="")
@@ -679,7 +694,8 @@ async def api_inspect():
             token = remember_capture(image_bytes)
 
             yield line({"stage": "analyzing", "capture": token})
-            await run_in_threadpool(camera.show_status, {"state": "analyzing"})
+            if oled_has_labelled_screens():  # older firmware keeps its CAPTURED screen instead
+                await run_in_threadpool(camera.show_status, {"state": "analyzing"})
             try:
                 result = await run_in_threadpool(analyze_image, image_bytes)
             except AnalysisError as exc:
@@ -728,7 +744,9 @@ async def api_upload(request: Request):
         return error_response(400, "invalid_image", str(exc), False)
     # Mirror the upload on the camera's OLED too; otherwise it keeps showing
     # the verdict of the last capture, which reads as this photo's result.
-    notify_oled({"state": "analyzing", "source": "upload"})
+    # On older firmware, clear the last verdict rather than show its mislabelled
+    # analysing screen.
+    notify_oled({"state": "analyzing", "source": "upload"} if oled_has_labelled_screens() else {"state": "ready"})
     async with analysis_lock:
         try:
             result = await run_in_threadpool(analyze_image, fitted)

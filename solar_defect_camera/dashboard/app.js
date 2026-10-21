@@ -44,6 +44,16 @@ function when(iso) {
   return date.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 function urgencyOf(defect) { return defect.root_cause?.urgency || defect.severity || "none"; }
+// "undetermined" means a photo can't single out one cause; present it as a
+// short list to check on site rather than a dead end. Older saved records
+// have no candidate list and an older title, so the wording is set here.
+function isOpenCause(cause) { return cause?.id === "undetermined"; }
+function causeLine(cause) {
+  if (!cause) return "Cause not recorded";
+  if (!isOpenCause(cause)) return cause.title;
+  const n = cause.candidates?.length || 0;
+  return n > 1 ? `${n} possible causes · check on site` : "Check on site to confirm the cause";
+}
 function modeLabel(meta) { return meta?.mode_label || MODE_LABEL[meta?.mode] || "Vision model"; }
 
 async function getJSON(url, options) {
@@ -192,7 +202,7 @@ function renderFindings(root, view, selected, onSelect) {
     index.style.background = OVERLAY[urgencyOf(d)] || OVERLAY.none;
     const text = el("span");
     text.appendChild(el("span", "name", TYPE[d.type] || d.type));
-    text.appendChild(el("span", "cause-line", d.root_cause?.title || "Cause not recorded"));
+    text.appendChild(el("span", "cause-line", causeLine(d.root_cause)));
     button.append(index, text, chip(urgencyOf(d), PLABEL[urgencyOf(d)] || urgencyOf(d)));
     button.addEventListener("click", () => onSelect(selected === i ? null : i));
     item.appendChild(button);
@@ -201,12 +211,15 @@ function renderFindings(root, view, selected, onSelect) {
   root.appendChild(list);
 
   const i = selected ?? 0, d = result.defects[i], cause = d.root_cause;
+  const open = isOpenCause(cause);
+  const candidates = open ? (cause.candidates || []) : [];
   const panel = el("section", "cause");
-  panel.appendChild(el("p", "kicker", `Region ${i + 1} · ${TYPE[d.type] || d.type} · probable cause`));
-  panel.appendChild(el("h3", null, cause?.title || "Cause not recorded"));
+  panel.appendChild(el("p", "kicker",
+    `Region ${i + 1} · ${TYPE[d.type] || d.type} · ${open ? "possible causes" : "probable cause"}`));
+  panel.appendChild(el("h3", null, open ? "Needs an on-site check" : cause?.title || "Cause not recorded"));
   const chips = el("div", "chips");
   chips.append(chip(urgencyOf(d), `${PLABEL[urgencyOf(d)] || urgencyOf(d)} urgency`));
-  if (cause?.confidence) chips.append(chip("none", `${cause.confidence} confidence`));
+  if (cause?.confidence && !open) chips.append(chip("none", `${cause.confidence} confidence`));
   panel.appendChild(chips);
 
   const details = el("dl");
@@ -219,7 +232,24 @@ function renderFindings(root, view, selected, onSelect) {
     details.appendChild(wrap);
   };
   add("What was seen", document.createTextNode(d.description));
-  if (cause) {
+  if (cause && open) {
+    if (cause.evidence) add("What the photo shows", el("span", "evidence", cause.evidence));
+    add("Why no single cause", document.createTextNode(cause.explanation));
+    if (candidates.length) {
+      const list = el("ul", "candidates");
+      candidates.forEach((c) => {
+        const row = el("li");
+        row.append(el("span", null, c.title), chip(c.urgency || "none", PLABEL[c.urgency] || "Varies"));
+        list.appendChild(row);
+      });
+      add(candidates.length > 1 ? "Possible causes" : "Possible cause", list);
+    }
+    const steps = [...new Set(candidates.flatMap((c) => c.verify_with || []))];
+    const confirm = el("ul");
+    (steps.length ? steps : cause.verify_with || []).forEach((step) => confirm.appendChild(el("li", null, step)));
+    add("How to tell them apart", confirm);
+    add("What to do", document.createTextNode(cause.action));
+  } else if (cause) {
     add("Why we think so", el("span", "evidence", cause.evidence || "No specific evidence was given."));
     add("About this cause", document.createTextNode(cause.explanation));
     const confirm = el("ul");
@@ -230,7 +260,7 @@ function renderFindings(root, view, selected, onSelect) {
   panel.appendChild(details);
   if (cause?.corrected) {
     panel.appendChild(el("p", "note",
-      "The model's first suggestion didn't fit this kind of defect, so the cause is marked as not determinable."));
+      "The model's first suggestion didn't fit this kind of defect, so it was replaced with the causes that do."));
   }
   panel.appendChild(el("p", "note", "Inferred from visible evidence in one photograph. Confirm on site before replacing equipment."));
   root.appendChild(panel);

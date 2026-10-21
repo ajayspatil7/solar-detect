@@ -196,6 +196,7 @@ def test_health_uses_plain_mode_label(monkeypatch):
 def test_inspect_streams_real_stages_and_saves(monkeypatch):
     monkeypatch.setenv("ANALYSIS_MODE", "mock")
     fake = FakeCamera().install(monkeypatch)
+    monkeypatch.setattr(camera_module, "last_health", {"firmware": "3.3.2-phase6"})
     events = stages(client.post("/api/inspect"))
     assert [e["stage"] for e in events] == ["capturing", "analyzing", "saving", "done"]
     done = events[-1]
@@ -331,6 +332,7 @@ def test_upload_mirrors_progress_and_result_on_the_oled(monkeypatch):
     monkeypatch.setenv("ANALYSIS_MODE", "mock")
     shown = []
     monkeypatch.setattr(camera_module, "show_status", shown.append)
+    monkeypatch.setattr(camera_module, "last_health", {"firmware": "3.3.2-phase6"})
     response = client.post("/api/upload", content=image_bytes("PNG", 800, 600), headers={"Content-Type": "image/png"})
     assert response.status_code == 200
     flush_oled()
@@ -361,3 +363,47 @@ def test_oled_updates_never_hold_up_an_upload(monkeypatch):
     assert response.status_code == 200 and time.monotonic() - started < 3
     release.set()
     flush_oled()
+
+
+def test_undetermined_cause_lists_the_possible_causes_for_that_defect():
+    cause = main.root_cause_for(model_defect(defect_type="possible_surface_crack", cause="undetermined"))
+    assert cause["id"] == "undetermined"
+    ids = [c["id"] for c in cause["candidates"]]
+    assert ids == ["mechanical_impact", "installation_or_handling_stress", "thermal_or_structural_stress"]
+    first = cause["candidates"][0]
+    entry = main.ROOT_CAUSES["mechanical_impact"]
+    assert first["title"] == entry["title"] and first["urgency"] == entry["urgency"]
+    assert first["verify_with"] == entry["verify_with"]
+
+
+def test_corrected_cause_also_lists_possible_causes():
+    cause = main.root_cause_for(model_defect(defect_type="possible_surface_crack", cause="bird_droppings"))
+    assert cause["corrected"] is True and len(cause["candidates"]) == 3
+
+
+def test_determined_cause_has_no_candidate_list():
+    assert "candidates" not in main.root_cause_for(model_defect())
+
+
+def test_undetermined_wording_is_actionable():
+    entry = main.ROOT_CAUSES["undetermined"]
+    assert "not determinable" not in entry["title"].lower()
+
+
+def test_capture_on_current_firmware_skips_the_old_analysing_screen(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+    fake = FakeCamera().install(monkeypatch)
+    monkeypatch.setattr(camera_module, "last_health", {"firmware": "3.3.1-phase6"})
+    stages(client.post("/api/inspect"))
+    assert {"state": "analyzing"} not in fake.statuses  # 3.3.1 would print "UPLOADED TO MAC"
+    assert fake.statuses[-1]["state"] == "result"
+
+
+def test_upload_on_current_firmware_clears_the_screen_instead(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MODE", "mock")
+    shown = []
+    monkeypatch.setattr(camera_module, "show_status", shown.append)
+    monkeypatch.setattr(camera_module, "last_health", {"firmware": "3.3.1-phase6"})
+    client.post("/api/upload", content=image_bytes("PNG", 800, 600), headers={"Content-Type": "image/png"})
+    flush_oled()
+    assert shown[0] == {"state": "ready"} and shown[-1]["state"] == "result"

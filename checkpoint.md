@@ -1246,6 +1246,18 @@ and checks every line fits the 21-character panel.
 Until it is flashed, uploads show "UPLOADED TO MAC" while analysing and
 "0 REGIONS" under CLEAR/RETAKE; verdicts are correct either way.
 
+Follow-up the same day (2026-10-22):
+- The backend now reads the camera's firmware version from `/health` and,
+  on builds before 3.3.2, **skips the analysing screen** (captures keep the
+  camera's own CAPTURED screen; uploads clear to READY), so "UPLOADED TO MAC"
+  never appears. On 3.3.2+ it sends the labelled analysing screen.
+- "Cause not determinable from the image" is replaced. An `undetermined`
+  cause now carries `candidates`: every cause in `root_causes.json` that can
+  produce that defect type, with urgency and checks. The dashboard shows
+  "N possible causes · check on site" and a "Needs an on-site check" panel
+  listing them and how to tell them apart. Old saved records get the new
+  wording too. Checked with real uploads of the crack photos. Suite: 42.
+
 ## Future phases
 
 - **Phase 4:** Revoke the exposed no-credit test key if not already done, run a
