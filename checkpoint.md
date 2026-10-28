@@ -1258,6 +1258,15 @@ Follow-up the same day (2026-10-22):
   listing them and how to tell them apart. Old saved records get the new
   wording too. Checked with real uploads of the crack photos. Suite: 42.
 
+2026-10-28, on the client's laptop over Krutika's hotspot: after Find camera
+the dashboard flickered "Camera not found" during live view. Cause: the
+15-second status check gave the camera 2.5 s and made two requests, and on
+the slow board one missed check reported it missing. Now `camera.check()`
+gets address and health in one request with a 6 s limit, and a camera that
+answered within the last 45 s (`GRACE_S`) stays reachable through a missed
+check. Requests skip the extra probe when the camera answered recently, and
+a single failed request no longer forgets its address. Suite: 46.
+
 ## Future phases
 
 - **Phase 4:** Revoke the exposed no-credit test key if not already done, run a

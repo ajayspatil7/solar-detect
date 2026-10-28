@@ -655,8 +655,7 @@ async def api_status(search: bool = False):
         "camera": {"reachable": False, "address": None},
     }
     try:
-        address = await run_in_threadpool(camera.address, search)
-        health_data = await run_in_threadpool(camera.health)
+        address, health_data = await run_in_threadpool(camera.check, search)
         status["camera"] = {
             "reachable": True,
             "address": address,

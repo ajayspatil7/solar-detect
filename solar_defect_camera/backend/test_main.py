@@ -172,6 +172,7 @@ class FakeCamera:
         monkeypatch.setattr(camera_module, "show_status", self.statuses.append)
         monkeypatch.setattr(camera_module, "save_record", self.save)
         monkeypatch.setattr(camera_module, "address", lambda search=False: (need(), "192.168.1.20")[1])
+        monkeypatch.setattr(camera_module, "check", lambda search=False: (need(), ("192.168.1.20", {"firmware": "3.3.0"}))[1])
         monkeypatch.setattr(camera_module, "health", lambda: {"rssi": -60, "firmware": "3.3.0", "sd": {"present": True}})
         return self
 
@@ -407,3 +408,51 @@ def test_upload_on_current_firmware_clears_the_screen_instead(monkeypatch):
     client.post("/api/upload", content=image_bytes("PNG", 800, 600), headers={"Content-Type": "image/png"})
     flush_oled()
     assert shown[0] == {"state": "ready"} and shown[-1]["state"] == "result"
+
+
+class FlakyLink:
+    """A camera whose /health sometimes misses, like the slow board."""
+    def __init__(self, answers):
+        self.answers, self.calls = list(answers), 0
+    def __call__(self, address, timeout=2.5):
+        self.calls += 1
+        ok = self.answers.pop(0) if self.answers else True
+        return {"firmware": "3.3.1-phase6", "capture_width": 1600, "rssi": -60, "sd": {"present": True}} if ok else None
+
+
+def fresh_camera_state(monkeypatch, answers):
+    link = FlakyLink(answers)
+    monkeypatch.setattr(camera_module, "probe", link)
+    monkeypatch.setenv("CAMERA_IP", "172.20.10.4")
+    monkeypatch.setattr(camera_module, "_address", None)
+    monkeypatch.setattr(camera_module, "_last_seen", 0.0)
+    return link
+
+
+def test_one_missed_check_does_not_report_the_camera_missing(monkeypatch):
+    fresh_camera_state(monkeypatch, [True, False])
+    assert client.get("/api/status").json()["camera"]["reachable"] is True
+    status = client.get("/api/status").json()["camera"]
+    assert status["reachable"] is True and status["address"] == "172.20.10.4"
+
+
+def test_a_camera_silent_beyond_the_grace_period_is_reported_missing(monkeypatch):
+    fresh_camera_state(monkeypatch, [True, False, False])
+    assert client.get("/api/status").json()["camera"]["reachable"] is True
+    monkeypatch.setattr(camera_module, "_last_seen", camera_module._last_seen - camera_module.GRACE_S - 1)
+    camera = client.get("/api/status").json()["camera"]
+    assert camera["reachable"] is False and camera["error"]["code"] == "camera_not_found"
+
+
+def test_status_asks_the_camera_once_per_check(monkeypatch):
+    link = fresh_camera_state(monkeypatch, [True])
+    client.get("/api/status")
+    assert link.calls == 1
+
+
+def test_recent_contact_skips_the_extra_check_before_a_request(monkeypatch):
+    link = fresh_camera_state(monkeypatch, [True])
+    client.get("/api/status")
+    before = link.calls
+    assert camera_module.address() == "172.20.10.4"
+    assert link.calls == before

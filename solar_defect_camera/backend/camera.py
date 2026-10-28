@@ -13,6 +13,7 @@ import json
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -36,6 +37,13 @@ NOT_FOUND = CameraError(
 _lock = threading.Lock()
 _address: str | None = None
 last_health: dict = {}  # the most recent /health, so callers can adapt to the firmware
+_last_seen = 0.0        # monotonic time the camera last answered anything
+
+# A camera on a slow or busy link can miss a status check while it streams the
+# live view. One miss is not a missing camera: report it missing only after it
+# has been silent this long. Status checks also get a generous time limit.
+GRACE_S = 45.0
+STATUS_TIMEOUT_S = 6.0
 
 
 # ------------------------------------------------------------- discovery ----
@@ -91,22 +99,45 @@ def discover(host_ip: str | None = None, remembered: str = "") -> str | None:
     return None
 
 
-def address(search: bool = False) -> str:
-    """The camera's current address. A remembered address is re-checked first;
-    a full network search only runs when asked, because it takes seconds."""
-    global _address
+def _seen() -> None:
+    global _last_seen
+    _last_seen = time.monotonic()
+
+
+def seen_recently() -> bool:
+    return _address is not None and time.monotonic() - _last_seen < GRACE_S
+
+
+def check(search: bool = False) -> tuple[str, dict]:
+    """The camera's address and health from a single request. A full network
+    search only runs when asked, because it takes seconds."""
+    global _address, last_health
     with _lock:
-        for candidate in (_address, os.getenv("CAMERA_IP", "").strip()):
-            if candidate and probe(candidate):
-                _address = candidate
-                return candidate
+        remembered = [a for a in (_address, os.getenv("CAMERA_IP", "").strip()) if a]
+        for candidate in dict.fromkeys(remembered):
+            health_now = probe(candidate, STATUS_TIMEOUT_S)
+            if health_now:
+                _address, last_health = candidate, health_now
+                _seen()
+                return candidate, health_now
         if search:
             found = discover()
             if found:
-                _address = found
-                return found
+                _address, last_health = found, probe(found, STATUS_TIMEOUT_S) or last_health
+                _seen()
+                return found, last_health
+        elif seen_recently():
+            return _address, last_health  # a missed check on a busy link
         _address = None
     raise NOT_FOUND
+
+
+def address(search: bool = False) -> str:
+    """The camera's current address. If it answered recently, that is trusted
+    without asking again, so every request doesn't cost an extra round trip."""
+    if not search and seen_recently():
+        return _address
+    return check(search)[0]
 
 
 def forget() -> None:
@@ -122,12 +153,16 @@ def _call(method: str, path: str, data: bytes | None = None, headers: dict | Non
     request = urllib.request.Request(f"http://{host}{path}", data=data, method=method, headers=headers or {})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
+            reply = response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
     except urllib.error.HTTPError as exc:
+        _seen()
         return exc.code, {k.lower(): v for k, v in exc.headers.items()}, exc.read()
     except OSError as exc:
-        forget()
+        # One failed request on a slow link is not proof the camera has gone;
+        # the status check decides that, after GRACE_S of silence.
         raise NOT_FOUND from exc
+    _seen()
+    return reply
 
 
 def _camera_error(status: int, body: bytes, fallback: str) -> CameraError:
@@ -140,7 +175,7 @@ def _camera_error(status: int, body: bytes, fallback: str) -> CameraError:
 
 def health() -> dict:
     global last_health
-    status, _, body = _call("GET", "/health", timeout=5)
+    status, _, body = _call("GET", "/health", timeout=STATUS_TIMEOUT_S)
     if status != 200:
         raise _camera_error(status, body, "The camera did not report its status.")
     last_health = json.loads(body)
