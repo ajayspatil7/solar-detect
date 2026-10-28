@@ -1267,6 +1267,17 @@ answered within the last 45 s (`GRACE_S`) stays reachable through a missed
 check. Requests skip the extra probe when the camera answered recently, and
 a single failed request no longer forgets its address. Suite: 46.
 
+Same day: **Start Solar Inspector now offers a Wi-Fi choice** (Windows).
+After the service starts it lists visible networks strongest first, marks
+5 GHz-only and enterprise networks as unusable by the camera, shows the
+iPhone-hotspot tips, and lets the operator keep the current network (Enter)
+or switch (asks for a password only if Windows has no saved profile). Then
+the existing camera search and hand-over run on that network. New in
+`tools/wifi_windows.py`: `parse_networks`, `parse_profiles`, `profile_xml`
+(WPA2/open, XML-escaped), `connect`. Tests: `tools/test_launcher.py` (8) and
+4 more in `test_wifi_windows.py`; full suite 58. **Not yet run on Windows** —
+`netsh` output was modelled on its documented English format.
+
 ## Future phases
 
 - **Phase 4:** Revoke the exposed no-credit test key if not already done, run a

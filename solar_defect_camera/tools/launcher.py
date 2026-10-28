@@ -176,6 +176,79 @@ def follow_laptop_wifi() -> str | None:
     return None
 
 
+MENU_SIZE = 9
+
+
+def choose_wifi(wifi=None, ask=input, ask_secret=getpass) -> None:
+    """Let the operator pick the Wi-Fi for this session, so the laptop is on
+    the network the camera will use. Windows only; elsewhere it does nothing."""
+    if wifi is None:
+        if sys.platform != "win32":
+            return
+        import wifi_windows as wifi
+
+    try:
+        current = wifi.current_connection()
+        networks = wifi.visible_networks()[:MENU_SIZE]
+    except Exception:
+        return  # Wi-Fi listing unavailable; carry on with whatever is connected
+
+    banner("WI-FI FOR THIS SESSION")
+    print("  The camera and this laptop must be on the same Wi-Fi.")
+    print(f"  This laptop is on : {current.ssid if current else 'no Wi-Fi'}\n")
+    if not networks:
+        print("  No Wi-Fi networks are visible right now.")
+        return
+    for number, network in enumerate(networks, 1):
+        notes = []
+        if current and network.ssid == current.ssid:
+            notes.append("connected")
+        if network.channels and not network.has_2ghz:
+            notes.append("5 GHz only - the camera cannot use it")
+        if network.is_enterprise:
+            notes.append("needs a username - the camera cannot use it")
+        tail = f"   [{'; '.join(notes)}]" if notes else ""
+        print(f"  {number}. {network.ssid}   (signal {network.signal}%){tail}")
+    print("\n  Using an iPhone hotspot? On the phone open Settings > Personal Hotspot,")
+    print("  turn on Maximize Compatibility, and keep that screen open until the")
+    print("  camera shows READY. Otherwise the iPhone hides the hotspot from it.")
+
+    try:
+        answer = ask("\n  Press Enter to keep this Wi-Fi, or type a number to switch: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not answer:
+        return
+    if not answer.isdigit() or not 1 <= int(answer) <= len(networks):
+        print("  That is not a number from the list; keeping the current Wi-Fi.")
+        return
+    chosen = networks[int(answer) - 1]
+    if current and chosen.ssid == current.ssid:
+        return
+    if chosen.is_enterprise or (chosen.channels and not chosen.has_2ghz):
+        fail(f"The camera cannot join '{chosen.ssid}'. Choose a 2.4 GHz network or a phone "
+             "hotspot with Maximize Compatibility on. Keeping the current Wi-Fi.")
+        return
+
+    password = None  # use what Windows already has saved
+    if chosen.ssid not in wifi.saved_profiles():
+        if chosen.is_open:
+            password = ""
+        else:
+            print(f"\n  Type the password for '{chosen.ssid}'. Nothing appears while you type.")
+            try:
+                password = ask_secret("  Wi-Fi password: ")
+            except (EOFError, KeyboardInterrupt):
+                return
+    print(f"\n  Connecting this laptop to '{chosen.ssid}'...")
+    interface = current.interface if current else "Wi-Fi"
+    if wifi.connect(chosen.ssid, password, interface):
+        print("  Connected.")
+    else:
+        fail(f"Could not connect to '{chosen.ssid}'. Check the password, or connect from the "
+             "Windows Wi-Fi menu, then start again.")
+
+
 def wait_for_backend(seconds: float = 25.0) -> bool:
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -212,6 +285,8 @@ def main() -> int:
         fail("The analysis service did not start. Close this window and try again.")
         input("\n  Press Enter to close. ")
         return 1
+
+    choose_wifi()
 
     host_ip = lan_address()
     print(f"  Analysis service: running on this computer  ({host_ip or 'no network'}:{PORT})")

@@ -23,6 +23,10 @@
    address starting `172.20.10.`.
 4. **Double-click `Start Solar Inspector`.** The first run takes a few minutes
    to set up. If Windows Firewall asks, choose **Allow** on private networks.
+   It then lists the Wi-Fi networks it can see: press **Enter** to keep the
+   current one, or type a number to switch (it asks for the password if this
+   laptop has not joined that network before). Networks marked **5 GHz only**
+   cannot be used by the camera.
 5. The **dashboard opens in the browser**. Leave the black launcher window open;
    closing it stops the inspector.
 
@@ -42,6 +46,7 @@ opens the download page instead; download the new ZIP and copy
 |---|---|
 | Camera screen blank | Unplug and replug USB. On the breadboard rig, check the red and black wires are pushed fully in. |
 | Camera screen shows **SETUP** | The camera could not find a known network. Check the hotspot is on with its settings screen open, then replug the camera. |
+| Camera shows **READY** but on another network | It joined a different saved network. Move the hotspot phone right next to the camera and replug it. |
 | Launcher says **CAMERA NOT FOUND** | Make sure the laptop and the camera are on the same hotspot, then press **Find camera** in the dashboard. |
 | "Python is not installed" | Install Python as in step 1, ticking "Add python.exe to PATH". |
 

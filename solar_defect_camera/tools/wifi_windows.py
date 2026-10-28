@@ -19,8 +19,9 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 SETUP_SSID = "SOLAR-SETUP"
 SETUP_ADDRESS = "192.168.4.1"
@@ -45,6 +46,32 @@ class Connection:
     @property
     def is_open(self) -> bool:
         return self.authentication.lower() == "open"
+
+
+@dataclass
+class Network:
+    """One network name as seen in a scan, combining all its access points."""
+    ssid: str
+    authentication: str = ""
+    signal: int = 0
+    channels: set[int] = field(default_factory=set)
+
+    @property
+    def has_2ghz(self) -> bool:
+        return any(c <= 14 for c in self.channels)
+
+    @property
+    def has_5ghz(self) -> bool:
+        return any(c > 14 for c in self.channels)
+
+    @property
+    def is_open(self) -> bool:
+        return self.authentication.lower() == "open"
+
+    @property
+    def is_enterprise(self) -> bool:
+        a = self.authentication.lower()
+        return "enterprise" in a or "802.1x" in a
 
 
 def netsh(*args: str, timeout: float = 20.0) -> str:
@@ -92,6 +119,65 @@ def parse_visible_ssids(output: str) -> list[str]:
     return [m.group(1).strip() for m in re.finditer(r"^SSID \d+ : (.*)$", output, re.MULTILINE)]
 
 
+def parse_networks(output: str) -> list[Network]:
+    """`netsh wlan show networks mode=bssid`, strongest first. The camera's own
+    setup network and hidden networks are left out."""
+    found: dict[str, Network] = {}
+    current: Network | None = None
+    for raw in output.splitlines():
+        line = raw.strip()
+        match = re.match(r"^SSID \d+ : ?(.*)$", line)
+        if match:
+            name = match.group(1).strip()
+            current = None if not name or name == SETUP_SSID else found.setdefault(name, Network(name))
+            continue
+        if current is None or " : " not in line:
+            continue
+        key, value = (part.strip() for part in line.split(" : ", 1))
+        if key == "Authentication":
+            current.authentication = value
+        elif key == "Signal" and value.rstrip("%").isdigit():
+            current.signal = max(current.signal, int(value.rstrip("%")))
+        elif key == "Channel" and value.isdigit():
+            current.channels.add(int(value))
+    return sorted(found.values(), key=lambda n: -n.signal)
+
+
+def parse_profiles(output: str) -> list[str]:
+    return [m.group(1).strip() for m in re.finditer(r"^\s*All User Profile\s*: (.*)$", output, re.MULTILINE)]
+
+
+def profile_xml(ssid: str, password: str) -> str:
+    """A Windows Wi-Fi profile for a home or hotspot network (WPA2 personal),
+    or an open one when there is no password."""
+    name = escape(ssid)
+    if not password:
+        return OPEN_PROFILE.replace("{ssid}", name)
+    return WPA2_PROFILE.replace("{ssid}", name).replace("{password}", escape(password))
+
+
+def visible_networks() -> list[Network]:
+    return parse_networks(netsh("wlan", "show", "networks", "mode=bssid"))
+
+
+def saved_profiles() -> list[str]:
+    return parse_profiles(netsh("wlan", "show", "profiles"))
+
+
+def connect(ssid: str, password: str | None, interface: str = "Wi-Fi", seconds: float = 30) -> bool:
+    """Join `ssid`. With password None, Windows' saved profile is used; with a
+    password ("" for an open network), a profile is written first."""
+    if password is not None:
+        profile_file = Path(tempfile.gettempdir()) / "solar-inspector-wifi.xml"
+        profile_file.write_text(profile_xml(ssid, password), encoding="utf-8")
+        try:
+            netsh("wlan", "add", "profile", f"filename={profile_file}", "user=current")
+        finally:
+            profile_file.unlink(missing_ok=True)  # it holds the password
+    netsh("wlan", "connect", f"name={ssid}", f"ssid={ssid}", f"interface={interface}")
+    return _wait_connected(interface, ssid, seconds)
+
+
 def current_connection() -> Connection | None:
     return parse_interfaces(netsh("wlan", "show", "interfaces"))
 
@@ -137,6 +223,22 @@ OPEN_PROFILE = """<?xml version="1.0"?>
   <MSM><security><authEncryption>
     <authentication>open</authentication><encryption>none</encryption><useOneX>false</useOneX>
   </authEncryption></security></MSM>
+</WLANProfile>
+"""
+
+
+WPA2_PROFILE = """<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+  <name>{ssid}</name>
+  <SSIDConfig><SSID><name>{ssid}</name></SSID></SSIDConfig>
+  <connectionType>ESS</connectionType>
+  <connectionMode>auto</connectionMode>
+  <MSM><security>
+    <authEncryption>
+      <authentication>WPA2PSK</authentication><encryption>AES</encryption><useOneX>false</useOneX>
+    </authEncryption>
+    <sharedKey><keyType>passPhrase</keyType><protected>false</protected><keyMaterial>{password}</keyMaterial></sharedKey>
+  </security></MSM>
 </WLANProfile>
 """
 
